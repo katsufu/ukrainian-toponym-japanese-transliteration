@@ -1,0 +1,27 @@
+# Local / Cluster-specific execution scripts
+scripts/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large Models and Audio Caches
+*.pth
+*.bin
+*.safetensors
+*.ark
+*.npz
+*.wav
+audio/
+logs/
+
+# Secrets & Environment Variables (NEVER commit actual API keys!)
+.env
+.env.local
+!.env.example
+
+# OS generated files
+.DS_Store
+Thumbs.db
+

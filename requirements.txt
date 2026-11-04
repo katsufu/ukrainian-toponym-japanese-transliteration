@@ -7,7 +7,7 @@ kneed==0.9.0
 altair==6.3.0
 
 # Ukrainian G2P & TTS (Senyk et al., 2025)
-ukrainian-tts-preprocessing==0.1.0
+git+https://github.com/lang-uk/ukrainian-tts-preprocessing.git
 ukrainian-tts==6.0.2
 six==1.17.0
 

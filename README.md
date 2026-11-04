@@ -2,7 +2,6 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![HPC: UPPMAX](https://img.shields.io/badge/HPC-UPPMAX%20SLURM-orange.svg)](https://www.uppmax.uu.se/)
 
 This repository contains the official codebase and dataset for the Master's Research & Development project conducted at **Uppsala University (Department of Linguistics and Philology)**.
 
@@ -79,8 +78,8 @@ ukrainian-toponym-transliteration/
 Clone the repository and install the dependencies in a Python 3.11 environment:
 
 ```bash
-git clone https://github.com/your-username/ukrainian-toponym-transliteration.git
-cd ukrainian-toponym-transliteration
+git clone https://github.com/katsufu/ukrainian-toponym-japanese-transliteration.git
+cd ukrainian-toponym-japanese-transliteration
 
 # Create and activate conda environment
 conda create -n ukr-toponym python=3.11 -y
@@ -116,24 +115,7 @@ Open `results/wikipedia_pageview_interactive.html` or `results/evaluation_dashbo
 
 ---
 
-## 🏛️ High-Performance Computing (UPPMAX)
-
-For full-scale evaluation across 5,500+ toponyms, batch scripts for Uppsala University's **UPPMAX (Rackham / Snowy)** cluster are provided in `scripts/run_pipeline.sh`.
-
-Detailed HPC deployment instructions, SLURM batch configurations, and storage quota management are documented in [src/README.md](src/README.md).
-
----
-
-## 📖 Citation & References
-
-```bibtex
-@mastersthesis{fujita2026ukrainian,
-  author       = {Katsutoshi Fujita},
-  title        = {Ukrainian Toponym Transliteration into Japanese: A Multi-Dimensional Evaluation of Rule-Based and LLM-Driven Approaches},
-  school       = {Uppsala University, Department of Linguistics and Philology},
-  year         = {2026}
-}
-```
+## 📖 References
 
 * **Senyk, O., et al. (2025).** *Grapheme-to-Phoneme conversion for Ukrainian using linguistic stress prediction.*
 * **Mortensen, D. R., et al. (2016).** *PanPhon: A Resource for Mapping IPA to Articulatory Feature Vectors.* COLING.

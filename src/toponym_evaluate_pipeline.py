@@ -264,3 +264,12 @@ if __name__ == '__main__':
     # 5. Saving the result
     df_evaluated.to_csv(output_csv, index=False, encoding='utf-8-sig')
     print(f"\nCompleted! Results saved successfully to: {output_csv}")
+
+    # 6. Generating interactive Altair visualization graphics and dashboard
+    print("\nGenerating interactive Altair visualizations via ToponymVisualizer...")
+    try:
+        from toponym_visualizer import ToponymVisualizer
+        visualizer = ToponymVisualizer()
+        visualizer.export_all_graphics(df_evaluated, knee_pv=optimal_threshold, output_dir=results_dir)
+    except Exception as e:
+        print(f"Warning: Failed to generate visualization dashboard automatically: {e}")

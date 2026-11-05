@@ -30,12 +30,18 @@ class AcousticDistanceEvaluator:
         try:
             from scipy.io import wavfile
             sr, data = wavfile.read(path)
-            if data.dtype == np.int16:
-                wf = data.astype(np.float32) / 32768.0
-            elif data.dtype == np.int32:
-                wf = data.astype(np.float32) / 2147483648.0
-            elif data.dtype == np.uint8:
-                wf = (data.astype(np.float32) - 128.0) / 128.0
+            # Normalize integer PCM data to [-1.0, 1.0] float32 expected by acoustic deep learning models
+            if np.issubdtype(data.dtype, np.floating):
+                wf = data.astype(np.float32)
+            elif np.issubdtype(data.dtype, np.signedinteger):
+                # Signed PCM (e.g. 16-bit: [-2^15, 2^15-1], 32-bit: [-2^31, 2^31-1]).
+                # Scale dynamically by 2^(bits - 1) (i.e. 32768.0 for 16-bit) to preserve dynamic range.
+                scale = float(2 ** (np.iinfo(data.dtype).bits - 1))
+                wf = data.astype(np.float32) / scale
+            elif np.issubdtype(data.dtype, np.unsignedinteger):
+                # Unsigned PCM (e.g. 8-bit: [0, 255] with silence centered at 2^(bits - 1) = 128).
+                bias = float(2 ** (np.iinfo(data.dtype).bits - 1))
+                wf = (data.astype(np.float32) - bias) / bias
             else:
                 wf = data.astype(np.float32)
             wf = torch.from_numpy(wf)

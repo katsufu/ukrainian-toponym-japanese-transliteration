@@ -207,7 +207,7 @@ if __name__ == '__main__':
     True: Verify connectivity across all pipelines using only the first 5 items (a mock test that completes in a few seconds)
     False: Full-scale execution using all data
     """
-    MOCK_MODE = True
+    MOCK_MODE = False
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(base_dir, '..'))

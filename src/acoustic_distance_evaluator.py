@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import torch
 import torchaudio
 from transformers import Wav2Vec2Model, AutoFeatureExtractor
@@ -7,6 +8,46 @@ from scipy.spatial.distance import cosine
 
 # Acoustic Distance, using Meta MMS (layer 7) + DTW
 class AcousticDistanceEvaluator:
+
+    @staticmethod
+    def _load_audio(path):
+        """
+        Robust audio loader supporting soundfile, scipy.io.wavfile, and torchaudio
+        to bypass TorchCodec/FFmpeg backend dependencies for WAV files.
+        """
+        try:
+            import soundfile as sf
+            data, sr = sf.read(path)
+            wf = torch.from_numpy(data.astype(np.float32))
+            if wf.ndim == 1:
+                wf = wf.unsqueeze(0)
+            else:
+                wf = wf.t()
+            return wf, sr
+        except Exception:
+            pass
+
+        try:
+            from scipy.io import wavfile
+            sr, data = wavfile.read(path)
+            if data.dtype == np.int16:
+                wf = data.astype(np.float32) / 32768.0
+            elif data.dtype == np.int32:
+                wf = data.astype(np.float32) / 2147483648.0
+            elif data.dtype == np.uint8:
+                wf = (data.astype(np.float32) - 128.0) / 128.0
+            else:
+                wf = data.astype(np.float32)
+            wf = torch.from_numpy(wf)
+            if wf.ndim == 1:
+                wf = wf.unsqueeze(0)
+            else:
+                wf = wf.t()
+            return wf, sr
+        except Exception:
+            pass
+
+        return torchaudio.load(path)
 
     def __init__(self, model_name='facebook/mms-1b', target_layer=7):
         self.target_layer = target_layer
@@ -18,7 +59,7 @@ class AcousticDistanceEvaluator:
     # Extracting features from 7th layer
     def _extract_layer7(self, audio_path):
         # Loading the WAV audio, resampling and normalizing it to meet the MMS model's requirements: 16 kHz, monaural, and a maximum amplitude of 1.0
-        waveform, sr = torchaudio.load(audio_path)
+        waveform, sr = self._load_audio(audio_path)
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
         if sr != 16000:
@@ -42,7 +83,7 @@ class AcousticDistanceEvaluator:
             chunk = valid_paths[i:i + batch_size]
             waveforms = []
             for p in chunk:
-                wf, sr = torchaudio.load(p)
+                wf, sr = self._load_audio(p)
                 if wf.shape[0] > 1:
                     wf = torch.mean(wf, dim=0, keepdim=True)
                 if sr != 16000:
@@ -64,7 +105,7 @@ class AcousticDistanceEvaluator:
         """
         Since the speaking rate and duration differ between the Ukrainian and Japanese audio, the lengths of the frame sequences do not match.
         Cosine distance is used for vector comparison between time frames.
-        Using Dynamic Time Warping, we search for an alignment path that maximizes the correspondence between the feature sets of both sequences by non-linearly stretching or compressing the time axis.
+        Using Dynamic Time Warping, we search for an alignment path that maximizes the correspondence between the feature sets of both sequences by non-linear stretching or compressing the time axis.
         Returns the "Normalized Acoustic Distance"—the cumulative minimum cost divided by the path length (a value closer to 0 indicates greater acoustic fidelity to the original sound).
         """ 
         if not os.path.exists(ukrainian_audio_path) or not os.path.exists(japanese_audio_path):

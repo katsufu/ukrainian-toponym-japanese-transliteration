@@ -9,12 +9,13 @@ To maintain a separation between the datasets and the pipeline, all datasets are
 ## Workflow Overview
 
 ```mermaid
+%%{init: {'flowchart': {'wrappingWidth': 500}}}%%
 flowchart TD
-    A["data/raw/Ukrainian toponyms corpus.csv\n(Toponyms & Manual Transliteration)"] -->|Stage 1: MediaWiki & Wikidata API Query| B["preprocessing/Ukrainian toponyms retrieval.py"]
-    B --> C["data/intermediate/ukrainian_toponyms_wikiinfo.csv\n(Enriched with PVs, Oblast, Coordinates, Accent info, Japanese title & URL)"]
-    C -->|Stage 2: Reflecting accent info (if available) for Japanese transliteration| D["preprocessing/expand_transliteration.py"]
-    D --> E["data/processed/ukrainian_toponyms_wikiinfo_with_accent_ja.csv\n(Katakana Transliterations: japanese_transliteration_by_accent)"]
-    E -->|Input for Main Pipeline| F["src/toponym_evaluate_pipeline.py"]
+    A["data/raw/Ukrainian toponyms corpus.csv<br/>(Toponyms & Manual Transliteration)"] -->|"Stage 1: MediaWiki & Wikidata API Query"| B["preprocessing/Ukrainian toponyms retrieval.py"]
+    B --> C["data/intermediate/ukrainian_toponyms_wikiinfo.csv<br/>(Enriched with PVs, Oblast, Coordinates, Accent info, Japanese title & URL)"]
+    C -->|"Stage 2: Reflecting accent info (if available) for Japanese transliteration"| D["preprocessing/expand_transliteration.py"]
+    D --> E["data/processed/ukrainian_toponyms_wikiinfo_with_accent_ja.csv<br/>(Katakana Transliterations: japanese_transliteration_by_accent)"]
+    E -->|"Input for Main Pipeline"| F["src/toponym_evaluate_pipeline.py"]
 ```
 
 ---

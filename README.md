@@ -26,37 +26,38 @@ To evaluate the extent of the performance, acoustic fideility of Ukrainian, and 
 As for Sociolinguistic Factor, we compare the popularity of established toponyms with rule-based transliterations using Knee Point Detection (Satopaa et al., 2011) over 2-year average Wikipedia pageviews to conclude if the toponym is conventional or rule-based.
 
 ```mermaid
+%%{init: {'flowchart': {'wrappingWidth': 650, 'nodeSpacing': 30, 'rankSpacing': 40}}}%%
 flowchart TD
-    TOP["Ukrainian Toponym Corpus (N = 1,821 Unique Place Names in Ukrainian)\nExample toponyms: Вінниця (Vinnytsia)\n*Latin alphabet with parentheses is shown only for readability purpose"]
+    TOP["<b>Ukrainian Toponym Corpus (N = 1,821 Unique Place Names in Ukrainian)</b><br/>Example toponyms: Вінниця (<i>Vinnytsia</i>)<br/><small>*Latin alphabet with parentheses is shown only for readability purpose</small>"]
 
     subgraph COL1 ["Ground Truth (Ukrainian toponyms)"]
         direction TB
-        C1_S1["Rule-Based phonemizer\nВінниця → Ві́нниця"]
-        C1_S2["Ground Truth IPA\nВінниця (Vinnytsia)\n/vʲiːnnɪt͡sʲɑ/"]
+        C1_S1["<b>Rule-Based phonemizer</b><br/>Вінниця → Ві́нниця"]
+        C1_S2["<b>Ground Truth IPA</b><br/>Вінниця (<i>Vinnytsia</i>)<br/>/vʲiːnnɪt͡sʲɑ/"]
         C1_S1 --> C1_S2
     end
 
     subgraph COL2 ["Transliteration A (Phonologically Faithful)"]
         direction TB
-        C2_S1["Extended, phonologically faithful rule\nヴィーンヌィツャ (Vīnnwitsya)"]
-        C2_S2["Rule-Based Mora G2P"]
-        C2_S3["Candidate IPA (A)\nヴィーンヌィツャ (Vīnnwitsya)\n/vʲiːnnit͡sʲa/"]
+        C2_S1["<b>Extended, phonologically<br/>faithful rule</b><br/><b>ヴィーンヌィツャ</b><br/>(<i>Vīnnwitsya</i>)"]
+        C2_S2["<b>Rule-Based Mora G2P</b>"]
+        C2_S3["<b>Candidate IPA (A)</b><br/><b>ヴィーンヌィツャ</b><br/>(<i>Vīnnwitsya</i>)<br/>/vʲiːnnit͡sʲa/"]
         C2_S1 --> C2_S2 --> C2_S3
     end
 
     subgraph COL3 ["Transliteration B (Via LLM: GPT API)"]
         direction TB
-        C3_S1["GPT API\nZero-shot prompt transliteration"]
-        C3_S2["Rule-Based Mora G2P"]
-        C3_S3["Candidate IPA (B)\nLLM-derived phonetic string"]
+        C3_S1["<b>GPT API</b><br/>Zero-shot prompt<br/>transliteration"]
+        C3_S2["<b>Rule-Based Mora G2P</b>"]
+        C3_S3["<b>Candidate IPA (B)</b><br/>LLM-derived<br/>phonetic string"]
         C3_S1 --> C3_S2 --> C3_S3
     end
 
     subgraph COL4 ["Transliteration C (Via LLM: Gemini API)"]
         direction TB
-        C4_S1["Gemini API\nZero-shot prompt transliteration"]
-        C4_S2["Rule-Based Mora G2P"]
-        C4_S3["Candidate IPA (C)\nLLM-derived phonetic string"]
+        C4_S1["<b>Gemini API</b><br/>Zero-shot prompt<br/>transliteration"]
+        C4_S2["<b>Rule-Based Mora G2P</b>"]
+        C4_S3["<b>Candidate IPA (C)</b><br/>LLM-derived<br/>phonetic string"]
         C4_S1 --> C4_S2 --> C4_S3
     end
 
@@ -64,38 +65,40 @@ flowchart TD
         direction LR
         subgraph E1 ["1. Articulatory Distortion"]
             direction TB
-            E1_S1["Candidate IPA: T vs. Ground Truth IPA: GT"]
-            E1_S2["PanPhon 24 Subsegmental Features"]
-            E1_S3["Feature Edit Distance: FED(T, GT)"]
+            E1_S1["Candidate IPA: T vs.<br/>Ground Truth IPA: GT"]
+            E1_S2["PanPhon 24<br/>Subsegmental Features"]
+            E1_S3["<b>Feature Edit Distance:<br/>FED(T, GT)</b>"]
             E1_S1 --> E1_S2 --> E1_S3
         end
 
         subgraph E2 ["2. Phonotactic Complexity"]
             direction TB
-            E2_S1["Candidate Kana string: T"]
-            E2_S2["Mora 3-Gram Kneser-Ney LM: NLTK + UniDic"]
-            E2_S3["Perplexity: PPL(T)"]
+            E2_S1["Candidate Kana<br/>string: T"]
+            E2_S2["Mora 3-Gram Kneser-Ney LM:<br/>NLTK + UniDic"]
+            E2_S3["<b>Perplexity:<br/>PPL(T)</b>"]
             E2_S1 --> E2_S2 --> E2_S3
         end
 
         subgraph E3 ["3. Acoustic Distance"]
             direction TB
-            E3_S1["TTS Audio Waves: A_T vs. A_GT"]
-            E3_S2["WavLM-Base-Plus (Layer 7 + CMVN)"]
-            E3_S3["Frame Alignment: FastDTW(A_T, A_GT)"]
+            E3_S1["TTS Audio Waves:<br/>A_T vs. A_GT"]
+            E3_S2["WavLM-Base-Plus<br/>(Layer 7 + CMVN)"]
+            E3_S3["<b>Frame Alignment:<br/>FastDTW(A_T, A_GT)</b>"]
             E3_S1 --> E3_S2 --> E3_S3
         end
+
+        E1 ~~~ E2 ~~~ E3
     end
 
-    TOP --> C1_S1
-    TOP --> C2_S1
-    TOP --> C3_S1
-    TOP --> C4_S1
+    TOP --> COL1
+    TOP --> COL2
+    TOP --> COL3
+    TOP --> COL4
 
-    C1_S2 --> EVAL
-    C2_S3 --> EVAL
-    C3_S3 --> EVAL
-    C4_S3 --> EVAL
+    COL1 --> EVAL
+    COL2 --> EVAL
+    COL3 --> EVAL
+    COL4 --> EVAL
 ```
 
 ---

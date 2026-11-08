@@ -4,7 +4,6 @@ numpy==2.4.6
 scipy==1.17.1
 matplotlib==3.11.2
 kneed==0.9.0
-altair==6.3.0
 
 # Ukrainian G2P & TTS (Senyk et al., 2025)
 # Note: ukrainian-tts-preprocessing is installed directly from official GitHub repository
@@ -13,13 +12,12 @@ ukrainian-tts==6.0.2
 six==1.17.0
 
 # Japanese G2P, FED & Phonotactic Evaluation
-epitran==1.35.3
 panphon==0.22.2
 nltk==3.10.4
 unidic-lite==1.0.8
 pyopenjtalk==0.4.1
 
-# Acoustic Distance (Meta MMS-1B & FastDTW)
+# Acoustic Distance (WavLM-Base-Plus & FastDTW)
 # Note: torch and torchaudio versions are unpinned to allow pip / host environment
 # to resolve the compatible PyTorch wheel matching the system CUDA/C++ ABI.
 torch

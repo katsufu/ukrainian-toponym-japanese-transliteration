@@ -15,6 +15,13 @@ __pycache__/
 *.wav
 audio/
 logs/
+*.err
+*.out
+results/*.err
+results/*.out
+results/*.html
+results/mock_visualizations/
+src/toponym_visualizer.py
 
 # Secrets & Environment Variables (NEVER commit actual API keys!)
 .env

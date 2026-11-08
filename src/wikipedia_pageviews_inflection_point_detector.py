@@ -29,8 +29,12 @@ class WikipediaViewsDetector:
         # Calculating knee point, using Kneedle algorithm
         kneedle = KneeLocator(ranks, valid_pvs, curve=self.curve_type, direction=self.direction, online=True)
 
-        knee_rank = kneedle.knee
-        knee_pv = float(kneedle.knee_y)
+        if kneedle.knee is not None and kneedle.knee_y is not None:
+            knee_rank = int(kneedle.knee)
+            knee_pv = float(kneedle.knee_y)
+        else:
+            knee_rank = max(1, len(valid_pvs) // 2)
+            knee_pv = float(valid_pvs[knee_rank - 1]) if len(valid_pvs) > 0 else 0.0
 
         print(f'Detected Knee Point: Rank = {knee_rank}, Threshold pageviews = {knee_pv:.1f} views/month')
 

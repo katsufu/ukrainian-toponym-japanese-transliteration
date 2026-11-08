@@ -2,7 +2,9 @@ import os
 import re
 import pandas as pd
 import numpy as np
+import warnings
 import altair as alt
+warnings.filterwarnings('ignore', message='.*Automatically deduplicated selection parameter.*')
 
 ## Toponym Evaluation Visualizer using Altair
 class ToponymVisualizer:
@@ -42,14 +44,17 @@ class ToponymVisualizer:
                 acoustic = r.get(col_ac, np.nan)
                 
                 if pd.notna(kana) and str(kana).strip() != '':
+                    fed_val = float(fed) if (pd.notna(fed) and np.isfinite(float(fed))) else np.nan
+                    ppl_val = float(ppl) if (pd.notna(ppl) and np.isfinite(float(ppl))) else np.nan
+                    ac_val = float(acoustic) if (pd.notna(acoustic) and np.isfinite(float(acoustic))) else np.nan
                     records.append({
                         'Ukrainian Toponym': ukr,
                         'Toponym (with Accent)': ukr_accent,
                         'Method': m_label,
                         'Transliteration': str(kana).strip(),
-                        'FED (Phonetic Distance)': float(fed) if pd.notna(fed) else np.nan,
-                        'Perplexity (PPL)': float(ppl) if pd.notna(ppl) else np.nan,
-                        'Acoustic Distance': float(acoustic) if pd.notna(acoustic) else np.nan,
+                        'FED (Phonetic Distance)': fed_val,
+                        'Perplexity (PPL)': ppl_val,
+                        'Acoustic Distance': ac_val,
                         'Avg Monthly Pageviews': float(pv)
                     })
         return pd.DataFrame(records)
@@ -187,7 +192,7 @@ class ToponymVisualizer:
             return alt.Chart().mark_text(text="No evaluation data available yet.")
 
         # Interactive selection for legend filtering
-        selection = alt.selection_point(fields=['Method'], bind='legend')
+        selection = alt.selection_point(name='method_sel', fields=['Method'], bind='legend')
 
         chart = alt.Chart(valid_long).mark_circle(size=75, opacity=0.75).encode(
             x=alt.X('Acoustic Distance:Q', title='Normalized Acoustic Distance (Lower = Closer Spoken Match)', scale=alt.Scale(zero=False)),
@@ -217,12 +222,14 @@ class ToponymVisualizer:
         return chart
 
     # 7. Interactive Knee Point and Pageview Curve
-    def plot_interactive_knee(self, df, knee_pv=533.8, knee_rank=500):
+    def plot_interactive_knee(self, df, knee_pv=533.8, knee_rank=None):
         valid_df = df[df['avg_monthly_pv_2y'].notna()].copy()
         valid_df['clean_ja_wiki'] = valid_df['ja_wiki_title'].apply(self.clean_title)
         valid_df = valid_df.sort_values(by='avg_monthly_pv_2y', ascending=False).reset_index(drop=True)
         valid_df['Rank'] = np.arange(1, len(valid_df) + 1)
         valid_df['Is Established'] = (valid_df['avg_monthly_pv_2y'] >= knee_pv) & (valid_df['has_ja_wiki'] == True) & (valid_df['clean_ja_wiki'] != '')
+        if knee_rank is None or knee_rank > len(valid_df):
+            knee_rank = max(1, int((valid_df['avg_monthly_pv_2y'] >= knee_pv).sum()))
 
         plot_df = valid_df[['Rank', 'avg_monthly_pv_2y', 'toponym', 'clean_ja_wiki', 'Is Established']].copy()
 
@@ -355,35 +362,9 @@ class ToponymVisualizer:
 
         return files_saved
 
-if __name__ == '__main__':
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(base_dir, '..'))
-    results_dir = os.path.join(project_root, 'results')
-    data_dir = os.path.join(project_root, 'data')
-    os.makedirs(results_dir, exist_ok=True)
-    
-    eval_csv = os.path.join(results_dir, 'ukrainian_toponyms_evaluation_results.csv')
-    mock_csv = os.path.join(results_dir, 'mock_evaluation_results.csv')
-    raw_candidates = [
-        os.path.join(data_dir, 'processed', 'ukrainian_toponyms_wikiinfo_with_accent_ja.csv'),
-        os.path.join(data_dir, 'ukrainian_toponyms_wikiinfo_with_accent_ja.csv'),
-        'ukrainian_toponyms_wikiinfo_with_accent_ja.csv'
-    ]
-    raw_csv = next((p for p in raw_candidates if os.path.exists(p)), raw_candidates[0])
-    
-    visualizer = ToponymVisualizer()
-    
-    if os.path.exists(eval_csv):
-        print(f"Loading evaluated production results from: {eval_csv}")
-        df = pd.read_csv(eval_csv)
-        visualizer.export_all_graphics(df, knee_pv=533.8, knee_rank=500, output_dir=results_dir)
-    elif os.path.exists(mock_csv):
-        print(f"Loading mock evaluation results from: {mock_csv}")
-        df = pd.read_csv(mock_csv)
-        visualizer.export_all_graphics(df, knee_pv=533.8, knee_rank=500, output_dir=results_dir)
-    else:
-        print("No evaluation CSV found yet. Generating sample demonstration graphics...")
-        # Create representative demonstration dataset with realistic metrics
+    # 10. Generate mock dataset for self-testing and pipeline verification
+    @staticmethod
+    def get_mock_dataframe():
         sample_data = {
             'toponym': ['Київ', 'Львів', 'Одеса', 'Харків', 'Дніпро', 'Запоріжжя', 'Вінниця', 'Полтава', 'Чернігів', 'Ужгород'],
             'toponym_with_accent': ['Ки́їв', 'Львів', 'Оде́са', 'Ха́рків', 'Дніпро́', 'Запорі́жжя', 'Ві́нниця', 'Полта́ва', 'Черні́гів', 'У́жгород'],
@@ -403,5 +384,85 @@ if __name__ == '__main__':
             'transliteration_c_ppl': [15.2, 20.4, 18.4, 19.8, 22.5, 25.1, 21.0, 17.5, 20.2, 22.1],
             'transliteration_c_acoustic': [0.310, 0.345, 0.195, 0.380, 0.395, 0.360, 0.375, 0.305, 0.385, 0.410]
         }
-        mock_df = pd.DataFrame(sample_data)
-        visualizer.export_all_graphics(mock_df, knee_pv=533.8, knee_rank=500, output_dir=results_dir)
+        return pd.DataFrame(sample_data)
+
+    # 11. Run complete mock test suite validating all Altair visual components
+    def run_mock_test(self, output_dir='results/mock_visualizations'):
+        os.makedirs(output_dir, exist_ok=True)
+        print('=' * 60)
+        print('  [MOCK TEST] ToponymVisualizer Altair Test Suite')
+        print('=' * 60)
+        
+        mock_df = self.get_mock_dataframe()
+        print(f'Generated synthetic evaluation dataset ({len(mock_df)} toponyms, 3 methods).')
+        print(f'Target mock export directory: {os.path.abspath(output_dir)}\n')
+
+        # Run full export suite
+        saved_files = self.export_all_graphics(mock_df, knee_pv=533.8, knee_rank=5, output_dir=output_dir)
+
+        # Verification step
+        print('\nVerifying exported HTML artifacts...')
+        all_passed = True
+        for name, path in saved_files.items():
+            if not os.path.exists(path):
+                print(f'  [FAIL] {name}: File not found ({path})')
+                all_passed = False
+                continue
+            
+            size_kb = os.path.getsize(path) / 1024.0
+            if size_kb < 1.0:
+                print(f'  [FAIL] {name}: File is unexpectedly small ({size_kb:.1f} KB)')
+                all_passed = False
+                continue
+
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read(2048)
+                if 'vega' not in content.lower() and 'altair' not in content.lower() and '<!DOCTYPE html>' not in content:
+                    print(f'  [FAIL] {name}: File does not appear to be valid Vega/Altair HTML')
+                    all_passed = False
+                    continue
+
+            print(f'  [PASS] {name:28s} ({size_kb:6.1f} KB) -> {os.path.basename(path)}')
+
+        print('=' * 60)
+        if all_passed:
+            print('  SUCCESS: All 7 Altair visualization mock tests passed!')
+        else:
+            print('  FAILURE: One or more visualization mock tests failed!')
+        print('=' * 60)
+        return all_passed
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Ukrainian Toponym Evaluation Visualizer (Altair)')
+    parser.add_argument('--mock', action='store_true', help='Run mock evaluation test with synthetic data')
+    parser.add_argument('--output-dir', type=str, default=None, help='Custom output directory for exported HTML files')
+    args = parser.parse_args()
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(base_dir, '..'))
+    results_dir = os.path.join(project_root, 'results')
+    os.makedirs(results_dir, exist_ok=True)
+    
+    eval_csv = os.path.join(results_dir, 'ukrainian_toponyms_evaluation_results.csv')
+    mock_csv = os.path.join(results_dir, 'mock_evaluation_results.csv')
+    
+    visualizer = ToponymVisualizer()
+
+    if args.mock:
+        out_dir = args.output_dir if args.output_dir else os.path.join(results_dir, 'mock_visualizations')
+        visualizer.run_mock_test(output_dir=out_dir)
+    elif os.path.exists(eval_csv):
+        out_dir = args.output_dir if args.output_dir else results_dir
+        print(f'Loading evaluated production results from: {eval_csv}')
+        df = pd.read_csv(eval_csv)
+        visualizer.export_all_graphics(df, knee_pv=533.8, knee_rank=500, output_dir=out_dir)
+    elif os.path.exists(mock_csv):
+        out_dir = args.output_dir if args.output_dir else results_dir
+        print(f'Loading mock evaluation results from: {mock_csv}')
+        df = pd.read_csv(mock_csv)
+        visualizer.export_all_graphics(df, knee_pv=533.8, knee_rank=500, output_dir=out_dir)
+    else:
+        out_dir = args.output_dir if args.output_dir else os.path.join(results_dir, 'mock_visualizations')
+        print('No evaluation CSV found. Automatically executing mock evaluation test...')
+        visualizer.run_mock_test(output_dir=out_dir)

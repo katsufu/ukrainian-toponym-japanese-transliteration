@@ -102,11 +102,14 @@ class ToponymEvaluatePipeline:
         print(f'Step 2: Deduplicated down to {len(unique_df)} unique evaluation combinations!')
         
         # 3. Retrieving LLMs' transliteration (either with batch or sequential)
-        toponym_list = unique_df['toponym'].tolist()
+        #    Use deduplicated toponym_with_accent so LLMs receive stress marks (наголос)
+        #    and batches never contain duplicate keys.
+        accented_series = unique_df['toponym_with_accent'].fillna(unique_df['toponym']).astype(str).str.strip()
+        toponym_list = list(dict.fromkeys(accented_series.tolist()))
         gpt_results = {}
         gemini_results = {}
         if self.use_batch:
-            print(f'Step 3: Generating LLMs\' transliteration in BATCH mode (batch_size={self.batch_size})...')
+            print(f'Step 3: Generating LLMs\' transliteration in BATCH mode (batch_size={self.batch_size}, unique_targets={len(toponym_list)})...')
             for i in tqdm(range(0, len(toponym_list), self.batch_size), desc="LLM Batches"):
                 chunk = toponym_list[i:i + self.batch_size]
                 # GPT Batch
@@ -116,12 +119,12 @@ class ToponymEvaluatePipeline:
                 gemini_chunk = self.gemini_transliterator.transliterate_batch(chunk)
                 gemini_results.update(gemini_chunk)
         else:
-            print('Step 3: Generating LLM transliterations in SEQUENTIAL mode...')
+            print(f'Step 3: Generating LLM transliterations in SEQUENTIAL mode (unique_targets={len(toponym_list)})...')
             for t in tqdm(toponym_list, desc="LLM Sequential"):
                 gpt_results[t] = self.gpt_transliterator.transliterate(t)
                 gemini_results[t] = self.gemini_transliterator.transliterate(t)
-        unique_df['transliteration_b'] = [gpt_results.get(t, '') for t in unique_df['toponym']]
-        unique_df['transliteration_c'] = [gemini_results.get(t, '') for t in unique_df['toponym']]
+        unique_df['transliteration_b'] = [gpt_results.get(t, '') for t in accented_series]
+        unique_df['transliteration_c'] = [gemini_results.get(t, '') for t in accented_series]
         
         # 4. G2P, TTS, evaluation
         print('Step 4: Running G2P, TTS, and Evaluations...')

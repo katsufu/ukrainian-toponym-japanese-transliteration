@@ -1,13 +1,51 @@
+import builtins
+import io
 import math
 import re
+import sys
+import pandas as pd
 import panphon
 import panphon.distance
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 
 # Feature Edit Distance (FED) with PanPhon
 class FEDEvaluator:
 
     def __init__(self):
-        self.distance = panphon.distance.Distance()
+        # Ensure UTF-8 file reading on Windows (cp932 locale) when PanPhon loads its IPA feature CSVs
+        orig_open = builtins.open
+        orig_io_open = io.open
+        orig_read_csv = pd.read_csv
+
+        def _utf8_open(file, mode='r', buffering=-1, encoding=None, *args, **kwargs):
+            if 'b' not in mode and encoding is None:
+                encoding = 'utf-8'
+            return orig_open(file, mode, buffering, encoding, *args, **kwargs)
+
+        def _utf8_read_csv(filepath_or_buffer, *args, **kwargs):
+            if hasattr(filepath_or_buffer, 'reconfigure'):
+                filepath_or_buffer.reconfigure(encoding='utf-8')
+            if 'encoding' not in kwargs or kwargs['encoding'] is None:
+                kwargs['encoding'] = 'utf-8'
+            return orig_read_csv(filepath_or_buffer, *args, **kwargs)
+
+        builtins.open = _utf8_open
+        io.open = _utf8_open
+        pd.read_csv = _utf8_read_csv
+        for mod_name, mod in list(sys.modules.items()):
+            if mod_name.startswith('panphon') and hasattr(mod, 'open'):
+                setattr(mod, 'open', _utf8_open)
+        try:
+            self.distance = panphon.distance.Distance()
+        finally:
+            builtins.open = orig_open
+            io.open = orig_io_open
+            pd.read_csv = orig_read_csv
 
     @staticmethod
     def _is_empty(val) -> bool:
@@ -37,6 +75,7 @@ class FEDEvaluator:
         gt_ipa = self._normalize_gt_ipa(ground_truth_ipa)
         return float(self.distance.feature_edit_distance(c_ipa, gt_ipa))
 
+
 if __name__ == '__main__':
     from ukrainian_g2p import UkrainianG2P
     from japanese_g2p import JapaneseG2P
@@ -47,7 +86,7 @@ if __name__ == '__main__':
 
     test_words_ua = ["Ки́їв", "Львів", "Ви́года"]
     test_words_ja = ["キーウ", "リヴィウ", "ヴィーホダ"]
-    
+
     for w_ua, w_ja in zip(test_words_ua, test_words_ja):
         ipa_ua = g2p_ua.convert(w_ua)
         ipa_ja = g2p_ja.convert(w_ja)

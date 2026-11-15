@@ -11,11 +11,10 @@ git+https://github.com/lang-uk/ukrainian-tts-preprocessing.git
 ukrainian-tts==6.0.2
 six==1.17.0
 
-# Japanese G2P, FED & Phonotactic Evaluation
+# Japanese G2P, FED, Phonotactic Evaluation & Neural ONNX TTS (Kokoro-82M)
 panphon==0.22.2
-nltk==3.10.4
 unidic-lite==1.0.8
-pyopenjtalk==0.4.1
+onnxruntime>=1.18.0
 
 # Acoustic Distance (WavLM-Base-Plus & FastDTW)
 # Note: torch and torchaudio versions are unpinned to allow pip / host environment

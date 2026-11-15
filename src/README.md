@@ -26,12 +26,12 @@ src/
 ## Component Details
 
 ### 1. `toponym_evaluate_pipeline.py` (`ToponymEvaluatePipeline`)
-* **Role**: Master pipeline orchestrator coordinating threshold detection, deduplication, LLM generation, G2P conversion, TTS synthesis, and 3-dimensional evaluation.
+* **Role**: Master pipeline orchestrator coordinating threshold detection, deduplication, multi-run LLM generation (`--num-llm-runs 5`), memoized G2P conversion, TTS synthesis, and 3-dimensional evaluation.
 * **Workflow**:
   1. Applies the Wikipedia pageview knee-point threshold ($\ge 533.8$ views/month) across all $5,554$ records via `RuleBasedTransliteration`.
   2. Deduplicates into $1,821$ unique (`toponym_with_accent`, `transliteration_a_kana`) evaluation pairs (`eval_1` to `eval_1821`).
-  3. Generates LLM transliterations (Method B: GPT-4o-mini, Method C: Gemini-3.5-flash-lite) in indexed JSON batches (`batch_size=30`).
-  4. Runs G2P, TTS audio synthesis, Feature Edit Distance (FED), Mora Perplexity (PPL), and batched WavLM Layer 7 + FastDTW acoustic evaluation.
+  3. Generates LLM transliterations (Method B: GPT-4o-mini, Method C: Gemini) across $K=5$ independent runs in indexed JSON batches (`batch_size=30`).
+  4. Runs G2P, TTS audio synthesis, Feature Edit Distance (FED), Mora Perplexity (PPL), and batched WavLM Layer 7 + FastDTW acoustic evaluation with identical-transliteration caching, computing the 5-run mean, standard deviation (`_std`), majority-vote transliteration, and self-consistency (`_agreement_rate`, `_exact_match`).
   5. Merges evaluated metrics back into the full $5,554$-row dataset and exports `results/ukrainian_toponyms_evaluation_results.csv`.
 
 ### 2. `ukrainian_g2p.py` (`UkrainianG2P`)
@@ -57,9 +57,9 @@ src/
 * **Interpretation**: Lower scores indicate greater phonetic fidelity in terms of articulatory configurations between the Japanese candidate IPA and Ukrainian Ground Truth IPA.
 
 ### 5. `perplexity_evaluator.py` (`PerplexityEvaluator`)
-* **Underlying Model**: Mora-level Kneser-Ney interpolated 3-gram language model (`nltk.lm.KneserNeyInterpolated`, `discount=0.75`) with uniform unigram inventory prior interpolation (Chen & Goodman, 1999).
-* **Background Corpus**: Extracts 50,000 pure Katakana lexical items directly from the precompiled binary dictionary (`sys.dic`) of `unidic-lite` (Den et al., 2008), tokenized into phonotactic morae via `_MORA_RE = re.compile(r'[ァ-ヴ][ァィゥェォャュョヮ]?|ー')`.
-* **Smoothing & OOV Resolution**: Appends a single uniform pseudo-observation across the complete 841-mora inventory (`_build_full_mora_inventory()`), guaranteeing finite, non-degenerate perplexity scores (`inf` = 0) while penalizing non-canonical foreign mora combinations (e.g., `ルィ`, `テャ`, `ヴャ`) in proportion to their rarity in Japanese phonotactics.
+* **Underlying Model**: Mora-level Interpolated Modified Kneser-Ney (MKN) 3-gram language model implemented in pure Python with count-specific closed-form discounts ($D_1, D_2, D_{3+}$) and a 0th-order uniform prior over the complete 841-mora inventory (Chen & Goodman, 1999, Eq. 16–20 & Eq. 26).
+* **Background Corpus**: Extracts 50,000 pure Katakana lexical items directly from the precompiled binary dictionary (`sys.dic`) of `unidic-lite` (Den et al., 2008), tokenized into phonotactic morae via `MORA_PATTERN = re.compile(r'[ァ-ヴ][ァィゥェォャュョヮ]?|ー')`.
+* **Smoothing & OOV Resolution**: Uses true empirical N-gram frequencies at the highest order ($k=3$), unique continuation counts $N_{1+}(\bullet\, h\, w)$ at lower orders ($k \in \{1, 2\}$), and exact base interpolation with $P_0(w) = 1 / |V_{\text{all}}|$, guaranteeing finite perplexity scores while accurately reflecting Japanese phonotactic naturalness.
 
 ### 6. `acoustic_distance_evaluator.py` (`AcousticDistanceEvaluator`)
 * **Underlying Model**: Microsoft WavLM-Base-Plus (`microsoft/wavlm-base-plus`; Chen et al., 2022).
@@ -71,9 +71,9 @@ src/
   $$\text{Dist}(A_{ukr}, A_{ja}) = \frac{1}{|P|} \sum_{(i, j) \in P} \left(1 - \frac{\vec{u}_i \cdot \vec{v}_j}{\|\vec{u}_i\|_2 \|\vec{v}_j\|_2}\right)$$
 
 ### 7. `audio_generator.py` (`AudioGenerator`)
-* **Ukrainian TTS**: ESPnet VITS Ukrainian synthesizer (`ukrainian-tts`, `Voices.Tetiana`, `Stress.Dictionary`), converting combining acute stress marks (`\u0301`) to `+` stress markers prior to synthesis.
-* **Japanese TTS**: `pyopenjtalk` HTS engine with full-context label manipulation (`_apply_hts_mods`). Substitutes proxy morae before MeCab parsing and rewrites the resulting 5-phoneme HTS contexts (`p1^p2-p3+p4=p5`) prior to waveform synthesis so that extended Ukrainian-specific Katakana digraphs (`ルィ, ムィ, ヌィ, クィ, グィ, プィ, ブィ, トィ, ドィ, ツャ, イィ, テャ, デャ`) are synthesized as true 1-mora syllables rather than splitting into 2 morae.
-* **Output**: Content-addressed 16kHz WAV audio files (`<eval_id>_<8char_md5>.wav`) cached under `audio/ukrainian_ground_truth/` and `audio/japanese_candidates/`.
+* **Ukrainian TTS**: ESPnet2 VITS Ukrainian synthesizer (`ukrainian-tts`, `Voices.Dmytro`, `Stress.Model`).
+* **Japanese TTS**: Kokoro-82M Neural ONNX synthesizer (`kokoro-v1.0.fp16.onnx`, male voice `jm_kumo`), conditioned directly on phonetic IPA sequences produced by `JapaneseG2P` (`_g2p_to_kokoro_ipa`). Preserves both standard Katakana and Ukrainian-specific extended digraphs (`ルィ, ムィ, ヌィ, クィ, グィ, プィ, ブィ, トィ, ドィ, ツャ, イィ, テャ, デャ, ヴ`) with high-intelligibility neural speech resampled to 16 kHz.
+* **Output**: Content-addressed, atomically written 16 kHz WAV audio files (`<eval_id>_<method>_<8char_md5>.wav`, validated for size $>44$ bytes) cached under `audio/ukrainian_ground_truth/` and `audio/japanese_candidates/`.
 
 ### 8. `rulebased_transliteration.py` (`RuleBasedTransliteration`)
 * **Role**: Implements **Method A** (Hybrid Rule-Based + Sociolinguistic Threshold Selector).

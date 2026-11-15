@@ -9,9 +9,11 @@ __pycache__/
 # Large Models and Audio Caches
 *.pth
 *.bin
+*.onnx
 *.safetensors
 *.ark
 *.npz
+config.yaml
 *.wav
 audio/
 logs/

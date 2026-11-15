@@ -137,7 +137,7 @@ class JapaneseG2P:
     }
 
     def __init__(self):
-        self.epitran = epitran.Epitran('jpn-Kana') if epitran is not None else None
+        self.epitran = None
 
     # Converting Japanese Katakana transliteration into IPA
     def convert(self, kana_word):

@@ -20,8 +20,8 @@ To evaluate the extent of the performance, acoustic fideility of Ukrainian, and 
 | Dimension | Metric | Implementation & Theoretical Rationale |
 | :--- | :--- | :--- |
 | **Phonetic Distance** | **Feature Edit Distance (FED)** | PanPhon 24-dimensional articulatory distinctive features (Mortensen et al., 2016) comparing Ukrainian IPA (with post-1989 tie-bar affricate normalization and stressed vowel length) to Japanese IPA. |
-| **Phonotactic Naturalness** | **Perplexity (PPL)** | Mora-level Kneser-Ney 3-gram language model (with uniform unigram prior interpolation; Chen & Goodman, 1999) trained on 50,000 Katakana lexical items extracted from UniDic-lite (Den et al., 2008). |
-| **Acoustic Fidelity** | **Normalized Acoustic Distance** | Layer 7 representations (with utterance-level CMVN and silence trimming) from WavLM-Base-Plus (Chen et al., 2022) aligned via Dynamic Time Warping (FastDTW, cosine distance). |
+| **Phonotactic Naturalness** | **Perplexity (PPL)** | Mora-level Interpolated Modified Kneser-Ney 3-gram language model (count-specific discounts $D_1, D_2, D_{3+}$ and 0th-order uniform prior over the 841-mora inventory; Chen & Goodman, 1999) trained on 50,000 Katakana lexical items extracted from UniDic-lite (Den et al., 2008). |
+| **Acoustic Fidelity** | **Normalized Acoustic Distance** | Layer 7 representations (with utterance-level CMVN and silence trimming) from WavLM-Base-Plus (Chen et al., 2022) aligned via Dynamic Time Warping (FastDTW, cosine distance), comparing Ukrainian VITS TTS against IPA-conditioned Japanese Kokoro-82M Neural ONNX TTS (`jm_kumo`). |
 
 As for Sociolinguistic Factor, we compare the popularity of established toponyms with rule-based transliterations using Knee Point Detection (Satopaa et al., 2011) over 2-year average Wikipedia pageviews to conclude if the toponym is conventional or rule-based.
 
@@ -74,7 +74,7 @@ flowchart TD
         subgraph E2 ["2. Phonotactic Complexity"]
             direction TB
             E2_S1["Candidate Kana<br/>string: T"]
-            E2_S2["Mora 3-Gram Kneser-Ney LM:<br/>NLTK + UniDic"]
+            E2_S2["Mora 3-Gram Modified<br/>Kneser-Ney LM (UniDic)"]
             E2_S3["<b>Perplexity:<br/>PPL(T)</b>"]
             E2_S1 --> E2_S2 --> E2_S3
         end
@@ -108,13 +108,13 @@ flowchart TD
 ```
 ukrainian-toponym-transliteration/
 ├── src/                                      # Modular source code
-│   ├── toponym_evaluate_pipeline.py          # Pipeline orchestrator
+│   ├── toponym_evaluate_pipeline.py          # Pipeline orchestrator (multi-run LLM averaging & caching)
 │   ├── ukrainian_g2p.py                      # Ukrainian G2P (ukrainian-word-stress + IPA normalization)
 │   ├── japanese_g2p.py                       # Deterministic mora-level Katakana-to-IPA G2P
 │   ├── fed_evaluator.py                      # Feature Edit Distance (PanPhon 24 features)
-│   ├── perplexity_evaluator.py               # Phonotactic complexity (UniDic Mora 3-gram PPL)
+│   ├── perplexity_evaluator.py               # Phonotactic complexity (Interpolated Modified Kneser-Ney 3-gram PPL)
 │   ├── acoustic_distance_evaluator.py        # WavLM-Base-Plus Layer 7 (CMVN) + FastDTW acoustic distance
-│   ├── audio_generator.py                    # Ukrainian (ESPnet VITS) & Japanese (PyOpenJTalk HTS) TTS
+│   ├── audio_generator.py                    # Ukrainian (ESPnet VITS) & Japanese (Kokoro-82M Neural ONNX) TTS
 │   ├── rulebased_transliteration.py          # Hybrid rule-based + Wikipedia pageview threshold selector
 │   ├── gpt_transliterator.py                 # OpenAI GPT-4o-mini (Single & Indexed JSON Batch)
 │   ├── gemini_transliteratior.py             # Google Gemini-3.5-flash-lite (Single & Indexed JSON Batch)

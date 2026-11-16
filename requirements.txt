@@ -17,8 +17,8 @@ unidic-lite==1.0.8
 onnxruntime>=1.18.0
 
 # Acoustic Distance (WavLM-Base-Plus & FastDTW)
-# Note: torch and torchaudio versions are unpinned to allow pip / host environment
-# to resolve the compatible PyTorch wheel matching the system CUDA/C++ ABI.
+# Note: For CUDA-accelerated GPU execution, install matching PyTorch wheels beforehand (e.g., cu118):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 torch
 torchaudio
 transformers==5.22.1

@@ -157,8 +157,11 @@ git clone https://github.com/katsufu/ukrainian-toponym-japanese-transliteration.
 cd ukrainian-toponym-japanese-transliteration
 
 # Create and activate conda environment
-conda create -n ukr-toponym python=3.11 -y
-conda activate ukr-toponym
+conda create -n <env_name> python=3.11 -y
+conda activate <env_name>
+
+# (Optional) For CUDA-enabled GPU environments (e.g., CUDA 11.8):
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Install dependencies
 pip install -r requirements.txt

@@ -116,8 +116,9 @@ ukrainian-toponym-transliteration/
 │   ├── acoustic_distance_evaluator.py        # WavLM-Base-Plus Layer 7 (CMVN) + FastDTW acoustic distance
 │   ├── audio_generator.py                    # Ukrainian (ESPnet VITS) & Japanese (Kokoro-82M Neural ONNX) TTS
 │   ├── rulebased_transliteration.py          # Hybrid rule-based + Wikipedia pageview threshold selector
-│   ├── gpt_transliterator.py                 # OpenAI GPT-4o-mini (Single & Indexed JSON Batch)
-│   ├── gemini_transliteratior.py             # Google Gemini-3.5-flash-lite (Single & Indexed JSON Batch)
+│   ├── llm_batch_utils.py                    # Shared 1-based batch JSON recovery, pacing & quota error handling
+│   ├── gpt_transliterator.py                 # OpenAI GPT-4o-mini (Single & 1-based JSON Batch)
+│   ├── gemini_transliteratior.py             # Google Gemini-3.5-flash-lite (Single & 1-based JSON Batch)
 │   ├── wikipedia_pageviews_inflection_point_detector.py # Kneedle knee-point detection
 │   └── README.md                             # Technical architecture & module documentation
 │
@@ -160,27 +161,49 @@ cd ukrainian-toponym-japanese-transliteration
 conda create -n <env_name> python=3.11 -y
 conda activate <env_name>
 
-# (Optional) For CUDA-enabled GPU environments (e.g., CUDA 11.8):
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-# Install dependencies
+# Install all pinned dependencies (includes torch==2.10.0, torchaudio==2.10.0, onnxruntime, unidic-lite, etc.)
 pip install -r requirements.txt
+
+# Verify core imports and version alignment
+python -c "import torch, torchaudio, transformers, onnxruntime, panphon, unidic_lite; print('OK! Torch:', torch.__version__, 'Torchaudio:', torchaudio.__version__)"
 ```
 
-### 2. Environment Variables (LLM API Keys)
-Set your API keys in your environment (don't hardcode them in scripts):
+> **Note on `torch` / `torchaudio` Version Alignment & `torchvision`**:
+> * `torch` and `torchaudio` must share the exact same release version (`2.10.0`, pinned in `requirements.txt`). If they drift apart (e.g., `torch 2.12.x` with `torchaudio 2.11.x`), importing `torchaudio` will fail with `OSError: ... libtorchaudio.so: undefined symbol`. Re-align them via:
+>   ```bash
+>   pip install "torch==2.10.0" "torchaudio==2.10.0"
+>   ```
+> * `torchvision` is **not** used in this repository. If an existing environment has an older `torchvision` installed that causes pip dependency conflict warnings or `transformers` import errors, remove it via:
+>   ```bash
+>   pip uninstall -y torchvision
+>   ```
+
+### 2. Environment Variables (UTF-8 & LLM API Keys)
+Set UTF-8 mode and your LLM API keys in your terminal session (never hardcode API keys in scripts):
 
 ```bash
+export PYTHONUTF8=1
 export OPENAI_API_KEY="your-openai-api-key"
 export GEMINI_API_KEY="your-gemini-api-key"
 ```
 
-### 3. Running the Pipeline
-You can test the connectivity of all components in **Mock Mode** of `toponym_evaluate_pipeline.py` (first 5 records, completes in seconds):
+*(On Windows PowerShell, use `$env:PYTHONUTF8="1"`, `$env:OPENAI_API_KEY="..."`, and `$env:GEMINI_API_KEY="..."`.)*
+
+### 3. Pre-Caching Models & Running the Pipeline
+On HPC clusters (such as UPPMAX) where compute nodes may have restricted internet access, run the standalone module checks and the 5-record **Mock Mode** on the login node first to pre-cache the neural TTS (`audio/_kokoro_model/`, `ukrainian-tts`) and acoustic evaluation models:
 
 ```bash
-# Run pipeline (toggle MOCK_MODE = True/False in src/toponym_evaluate_pipeline.py)
-python src/toponym_evaluate_pipeline.py
+# 1. Pre-cache Kokoro-82M ONNX & Ukrainian VITS TTS models and verify audio synthesis
+python src/audio_generator.py
+
+# 2. Verify Interpolated Modified Kneser-Ney (MKN) 3-gram Perplexity on UniDic-lite (50,000 words)
+python src/perplexity_evaluator.py
+
+# 3. Run Mock Test (first 5 records, 5 LLM runs with evaluation caching)
+python src/toponym_evaluate_pipeline.py --mock --num-llm-runs 5
+
+# 4. Run Full Production Pipeline (all records, 5 LLM runs)
+python src/toponym_evaluate_pipeline.py --num-llm-runs 5
 ```
 
 ---

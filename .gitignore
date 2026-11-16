@@ -22,6 +22,7 @@ logs/
 results/*.err
 results/*.out
 results/*.html
+results/llm_run_cache.json*
 results/mock_visualizations/
 src/toponym_visualizer.py
 

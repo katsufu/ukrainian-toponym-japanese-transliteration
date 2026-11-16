@@ -111,8 +111,13 @@ class AudioGenerator:
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         available = ort.get_available_providers()
         active_providers = [p for p in providers if p in available] or ['CPUExecutionProvider']
+        sess_opts = ort.SessionOptions()
+        cpu_quota = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else (os.cpu_count() or 2)
+        sess_opts.intra_op_num_threads = max(1, min(4, int(os.environ.get('SLURM_CPUS_PER_TASK') or cpu_quota)))
+        sess_opts.inter_op_num_threads = 1
         self.kokoro_sess = ort.InferenceSession(
             resolved_paths['kokoro-v1.0.fp16.onnx'],
+            sess_options=sess_opts,
             providers=active_providers
         )
         self.kokoro_input_names = [inp.name for inp in self.kokoro_sess.get_inputs()]

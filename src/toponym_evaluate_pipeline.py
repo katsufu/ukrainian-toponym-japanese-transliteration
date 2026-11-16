@@ -1,5 +1,6 @@
 import argparse
 from collections import Counter
+import json
 import math
 import os
 import sys
@@ -17,6 +18,7 @@ from wikipedia_pageviews_inflection_point_detector import WikipediaViewsDetector
 from ukrainian_g2p import UkrainianG2P
 from japanese_g2p import JapaneseG2P
 from rulebased_transliteration import RuleBasedTransliteration
+from llm_batch_utils import QuotaExhaustedError
 from gpt_transliterator import GPTTransliteration
 from gemini_transliteratior import GeminiTransliteration
 from audio_generator import AudioGenerator
@@ -33,18 +35,21 @@ class ToponymEvaluatePipeline:
         corpus=None,
         pageviews_threshold: float = 100.0,
         use_batch: bool = True,
-        batch_size: int = 30,
+        batch_size: int = 60,
         num_llm_runs: int = 5,
         base_audio_dir: str = 'audio',
+        llm_cache_path: str = None,
     ):
         print(
             f'Initializing pipeline components (use_batch={use_batch}, '
-            f'batch_size={batch_size}, num_llm_runs={num_llm_runs})...'
+            f'batch_size={batch_size}, num_llm_runs={num_llm_runs})...',
+            flush=True,
         )
 
         self.use_batch = use_batch
         self.batch_size = batch_size
         self.num_llm_runs = max(int(num_llm_runs), 1)
+        self.llm_cache_path = llm_cache_path
 
         # Instantiating G2P tools
         self.ukrainian_g2p = UkrainianG2P()
@@ -131,11 +136,93 @@ class ToponymEvaluatePipeline:
             'exact_match': exact_match,
         }
 
+    def _load_llm_cache(self) -> dict:
+        if self.llm_cache_path and os.path.exists(self.llm_cache_path):
+            try:
+                with open(self.llm_cache_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception as e:
+                print(f'[WARNING] Failed to load LLM checkpoint cache ({self.llm_cache_path}): {e}', flush=True)
+        return {}
+
+    def _save_llm_cache(self, cache_data: dict):
+        if not self.llm_cache_path:
+            return
+        cache_dir = os.path.dirname(os.path.abspath(self.llm_cache_path))
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+        tmp_path = self.llm_cache_path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, self.llm_cache_path)
+
+    def _collect_llm_runs(
+        self,
+        provider_key: str,
+        provider_label: str,
+        transliterator,
+        toponym_list: list,
+        llm_cache: dict,
+    ) -> list:
+        """
+        Execute K independent runs for a single LLM provider with batch-level disk checkpointing.
+        Only queries uncached non-empty items per run and saves progress after every batch.
+        """
+        provider_cache = llm_cache.setdefault(provider_key, {})
+        runs_output = []
+        total_targets = len(toponym_list)
+
+        for run_idx in range(1, self.num_llm_runs + 1):
+            run_key = f'run_{run_idx}'
+            run_map = provider_cache.setdefault(run_key, {})
+            missing_targets = [t for t in toponym_list if not (run_map.get(t) and str(run_map.get(t)).strip())]
+
+            if not missing_targets:
+                print(
+                    f'Step 3 [{provider_label}] (Run {run_idx}/{self.num_llm_runs}): '
+                    f'Loaded 100% from checkpoint cache ({total_targets}/{total_targets}).',
+                    flush=True,
+                )
+            elif self.use_batch:
+                print(
+                    f'Step 3 [{provider_label}] (Run {run_idx}/{self.num_llm_runs}): '
+                    f'Fetching {len(missing_targets)}/{total_targets} uncached targets in BATCH mode '
+                    f'(batch_size={self.batch_size})...',
+                    flush=True,
+                )
+                for i in tqdm(
+                    range(0, len(missing_targets), self.batch_size),
+                    desc=f"{provider_label} Batches (Run {run_idx}/{self.num_llm_runs})",
+                ):
+                    chunk = missing_targets[i:i + self.batch_size]
+                    chunk_res = transliterator.transliterate_batch(chunk)
+                    for t, kana in chunk_res.items():
+                        if kana and str(kana).strip():
+                            run_map[t] = str(kana).strip()
+                    self._save_llm_cache(llm_cache)
+            else:
+                print(
+                    f'Step 3 [{provider_label}] (Run {run_idx}/{self.num_llm_runs}): '
+                    f'Fetching {len(missing_targets)}/{total_targets} uncached targets in SEQUENTIAL mode...',
+                    flush=True,
+                )
+                for t in tqdm(missing_targets, desc=f"{provider_label} Sequential (Run {run_idx}/{self.num_llm_runs})"):
+                    kana = transliterator.transliterate(t)
+                    if kana and str(kana).strip():
+                        run_map[t] = str(kana).strip()
+                    self._save_llm_cache(llm_cache)
+
+            runs_output.append({t: run_map.get(t, '') for t in toponym_list})
+
+        return runs_output
+
     def run_pipeline(self, df: pd.DataFrame) -> pd.DataFrame:
-        print(f'Original total records: {len(df)}')
+        print(f'Original total records: {len(df)}', flush=True)
 
         # 1. For all entries, determine rule-based transliteration based on Wikipedia pageviews threshold.
-        print('Step 1: Applying Wikipedia pageviews threshold to rule-based transliteration...')
+        print('Step 1: Applying Wikipedia pageviews threshold to rule-based transliteration...', flush=True)
         translit_a_list = []
         for _, row in df.iterrows():
             translit_a_list.append(self.rule_base_transliterator.transliterate(row))
@@ -146,42 +233,33 @@ class ToponymEvaluatePipeline:
             subset=['toponym_with_accent', 'transliteration_a_kana']
         ).copy().reset_index(drop=True)
         unique_df['eval_id'] = [f'eval_{i+1}' for i in range(len(unique_df))]
-        print(f'Step 2: Deduplicated down to {len(unique_df)} unique evaluation combinations!')
+        print(f'Step 2: Deduplicated down to {len(unique_df)} unique evaluation combinations!', flush=True)
 
-        # 3. Retrieving LLMs' transliterations across K independent runs (default K=5)
+        # 3. Retrieving LLMs' transliterations across K independent runs (with disk checkpointing)
         accented_series = unique_df['toponym_with_accent'].fillna(unique_df['toponym']).astype(str).str.strip()
         toponym_list = list(dict.fromkeys(accented_series.tolist()))
 
-        gpt_runs_per_run = []
-        gemini_runs_per_run = []
-        for run_idx in range(1, self.num_llm_runs + 1):
-            gpt_results = {}
-            gemini_results = {}
-            if self.use_batch:
-                print(
-                    f'Step 3 (Run {run_idx}/{self.num_llm_runs}): Generating LLM transliterations in BATCH mode '
-                    f'(batch_size={self.batch_size}, unique_targets={len(toponym_list)})...'
-                )
-                for i in tqdm(
-                    range(0, len(toponym_list), self.batch_size),
-                    desc=f"LLM Batches (Run {run_idx}/{self.num_llm_runs})"
-                ):
-                    chunk = toponym_list[i:i + self.batch_size]
-                    gpt_chunk = self.gpt_transliterator.transliterate_batch(chunk)
-                    gpt_results.update(gpt_chunk)
-                    gemini_chunk = self.gemini_transliterator.transliterate_batch(chunk)
-                    gemini_results.update(gemini_chunk)
-            else:
-                print(
-                    f'Step 3 (Run {run_idx}/{self.num_llm_runs}): Generating LLM transliterations in SEQUENTIAL mode '
-                    f'(unique_targets={len(toponym_list)})...'
-                )
-                for t in tqdm(toponym_list, desc=f"LLM Sequential (Run {run_idx}/{self.num_llm_runs})"):
-                    gpt_results[t] = self.gpt_transliterator.transliterate(t)
-                    gemini_results[t] = self.gemini_transliterator.transliterate(t)
-
-            gpt_runs_per_run.append(gpt_results)
-            gemini_runs_per_run.append(gemini_results)
+        llm_cache = self._load_llm_cache()
+        try:
+            gpt_runs_per_run = self._collect_llm_runs(
+                'gpt', 'Method B (GPT)', self.gpt_transliterator, toponym_list, llm_cache
+            )
+            gemini_runs_per_run = self._collect_llm_runs(
+                'gemini', 'Method C (Gemini)', self.gemini_transliterator, toponym_list, llm_cache
+            )
+        except QuotaExhaustedError as qe:
+            self._save_llm_cache(llm_cache)
+            print(f'\n[PAUSED FOR API QUOTA / AUTH] {qe}', flush=True)
+            if self.llm_cache_path:
+                print(f'Checkpoint cache saved safely to: {self.llm_cache_path}', flush=True)
+                for pk, pl in [('gpt', 'Method B (GPT)'), ('gemini', 'Method C (Gemini)')]:
+                    status_str = ', '.join(
+                        f'Run{r}={sum(1 for t in toponym_list if llm_cache.get(pk, {}).get(f"run_{r}", {}).get(t))}/{len(toponym_list)}'
+                        for r in range(1, self.num_llm_runs + 1)
+                    )
+                    print(f'  {pl}: {status_str}', flush=True)
+                print('Re-run the pipeline after quota resets to resume seamlessly without losing cached runs.', flush=True)
+            raise
 
         # 4. G2P, TTS, FED, and Perplexity Evaluation with Memoization Cache
         print('Step 4: Running G2P, TTS, FED, and Perplexity Evaluations (with identical-transliteration caching)...')
@@ -412,12 +490,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Ukrainian Toponym Transliteration Multi-Dimensional Evaluation Pipeline')
     parser.add_argument('--mock', action='store_true', help='Run mock test on the first 5 records')
     parser.add_argument('--num-llm-runs', type=int, default=5, help='Number of LLM runs to average (default: 5)')
-    parser.add_argument('--batch-size', type=int, default=None, help='Batch size for LLM API calls')
+    parser.add_argument('--batch-size', type=int, default=None, help='Batch size for LLM API calls (default: 60 production, 5 mock)')
+    parser.add_argument('--llm-cache-path', type=str, default=None, help='Path to persistent JSON checkpoint cache for LLM runs')
+    parser.add_argument('--clear-llm-cache', action='store_true', help='Remove existing LLM checkpoint cache before running')
     args, _ = parser.parse_known_args()
 
     is_mock = MOCK_MODE or args.mock
     num_runs = args.num_llm_runs
-    batch_sz = args.batch_size if args.batch_size is not None else (5 if is_mock else 30)
+    batch_sz = args.batch_size if args.batch_size is not None else (5 if is_mock else 60)
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(base_dir, '..'))
@@ -434,7 +514,14 @@ if __name__ == '__main__':
     if not os.path.exists(csv_file):
         results_dir = '.'
 
-    print(f"Loading data from {csv_file}...")
+    llm_cache_path = args.llm_cache_path
+    if llm_cache_path is None and not is_mock:
+        llm_cache_path = os.path.join(results_dir, 'llm_run_cache.json')
+    if args.clear_llm_cache and llm_cache_path and os.path.exists(llm_cache_path):
+        os.remove(llm_cache_path)
+        print(f"Cleared existing LLM checkpoint cache: {llm_cache_path}", flush=True)
+
+    print(f"Loading data from {csv_file}...", flush=True)
     df = pd.read_csv(csv_file)
 
     # 1. Inflection point detection
@@ -459,21 +546,25 @@ if __name__ == '__main__':
         batch_size=batch_sz,
         num_llm_runs=num_runs,
         base_audio_dir=audio_dir,
+        llm_cache_path=llm_cache_path,
     )
 
     # 3. If conditions depending on MOCK_MODE / --mock boolean value
     if is_mock:
-        print(f"\n[MOCK MODE] Testing pipeline with the first 5 records only (num_llm_runs={num_runs})...")
+        print(f"\n[MOCK MODE] Testing pipeline with the first 5 records only (num_llm_runs={num_runs})...", flush=True)
         eval_subset = df.head(5).copy()
         output_csv = os.path.join(results_dir, 'mock_evaluation_results.csv')
     else:
-        print(f"\n[PRODUCTION MODE] Running full pipeline for all {len(df)} records (num_llm_runs={num_runs})...")
+        print(f"\n[PRODUCTION MODE] Running full pipeline for all {len(df)} records (num_llm_runs={num_runs}, batch_size={batch_sz})...", flush=True)
         eval_subset = df.copy()
         output_csv = os.path.join(results_dir, 'ukrainian_toponyms_evaluation_results.csv')
 
     # 4. Executing pipeline
-    df_evaluated = pipeline.run_pipeline(eval_subset)
+    try:
+        df_evaluated = pipeline.run_pipeline(eval_subset)
+    except QuotaExhaustedError:
+        sys.exit(1)
 
     # 5. Saving the result
     df_evaluated.to_csv(output_csv, index=False, encoding='utf-8-sig')
-    print(f"\nCompleted! Results saved successfully to: {output_csv}")
+    print(f"\nCompleted! Results saved successfully to: {output_csv}", flush=True)

@@ -16,11 +16,12 @@ panphon==0.22.2
 unidic-lite==1.0.8
 onnxruntime>=1.18.0
 
-# Acoustic Distance (WavLM-Base-Plus & FastDTW)
-# Note: For CUDA-accelerated GPU execution, install matching PyTorch wheels beforehand (e.g., cu118):
-#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-torch
-torchaudio
+# Acoustic Distance (Meta MMS / Wav2Vec2 & FastDTW)
+# Note: Pin torch and torchaudio to the exact same version (2.10.0) to prevent C++ ABI symbol
+# mismatches (libtorchaudio.so undefined symbol) when espnet / ukrainian-tts resolves dependencies.
+# Do NOT install torchvision (unused in this audio/NLP pipeline and can cause version conflicts).
+torch==2.10.0
+torchaudio==2.10.0
 transformers==5.22.1
 soundfile>=0.12.1
 fastdtw==0.3.4

@@ -16,6 +16,7 @@ src/
 ├── acoustic_distance_evaluator.py        # WavLM-Base-Plus Layer 7 (CMVN) + FastDTW evaluator
 ├── audio_generator.py                    # Dual-language TTS audio synthesizer
 ├── rulebased_transliteration.py          # Hybrid rule-based + Wikipedia pageview threshold selector
+├── llm_batch_utils.py                    # Shared 1-based batch JSON recovery, pacing & quota error handling
 ├── gpt_transliterator.py                 # OpenAI GPT-4o-mini zero-shot transliteration
 ├── gemini_transliteratior.py             # Google Gemini 3.5 Flash zero-shot transliteration
 └── wikipedia_pageviews_inflection_point_detector.py # Kneedle algorithm & table exporter
@@ -26,11 +27,11 @@ src/
 ## Component Details
 
 ### 1. `toponym_evaluate_pipeline.py` (`ToponymEvaluatePipeline`)
-* **Role**: Master pipeline orchestrator coordinating threshold detection, deduplication, multi-run LLM generation (`--num-llm-runs 5`), memoized G2P conversion, TTS synthesis, and 3-dimensional evaluation.
+* **Role**: Master pipeline orchestrator coordinating threshold detection, deduplication, multi-run LLM generation (`--num-llm-runs 5`) with disk checkpointing, memoized G2P conversion, TTS synthesis, and 3-dimensional evaluation.
 * **Workflow**:
   1. Applies the Wikipedia pageview knee-point threshold ($\ge 533.8$ views/month) across all $5,554$ records via `RuleBasedTransliteration`.
   2. Deduplicates into $1,821$ unique (`toponym_with_accent`, `transliteration_a_kana`) evaluation pairs (`eval_1` to `eval_1821`).
-  3. Generates LLM transliterations (Method B: GPT-4o-mini, Method C: Gemini) across $K=5$ independent runs in indexed JSON batches (`batch_size=30`).
+  3. Generates LLM transliterations (Method B: GPT-4o-mini, Method C: Gemini) across $K=5$ independent runs in 1-based indexed JSON batches (`batch_size=60`), persisting each completed batch atomically to `results/llm_run_cache.json` so interrupted/rate-limited runs resume seamlessly.
   4. Runs G2P, TTS audio synthesis, Feature Edit Distance (FED), Mora Perplexity (PPL), and batched WavLM Layer 7 + FastDTW acoustic evaluation with identical-transliteration caching, computing the 5-run mean, standard deviation (`_std`), majority-vote transliteration, and self-consistency (`_agreement_rate`, `_exact_match`).
   5. Merges evaluated metrics back into the full $5,554$-row dataset and exports `results/ukrainian_toponyms_evaluation_results.csv`.
 
@@ -79,13 +80,13 @@ src/
 * **Role**: Implements **Method A** (Hybrid Rule-Based + Sociolinguistic Threshold Selector).
 * **Logic**: If a toponym has an existing Japanese Wikipedia article (`has_ja_wiki == True`) and its 2-year average monthly pageviews meet or exceed the Kneedle threshold (`avg_monthly_pv_2y >= pv_threshold`), returns the cleaned established Japanese Wikipedia title (`ja_wiki_title`); otherwise returns the accent-conditioned rule-based transliteration (`japanese_transliteration_by_accent`).
 
-### 9. LLM Transliterators (`gpt_transliterator.py` & `gemini_transliteratior.py`)
+### 9. LLM Transliterators (`llm_batch_utils.py`, `gpt_transliterator.py` & `gemini_transliteratior.py`)
 * **Models**:
-  * **Method B (`GPTTransliteration`)**: OpenAI `gpt-4o-mini` (`temperature=0.0`, `response_format={"type": "json_object"}`).
-  * **Method C (`GeminiTransliteration`)**: Google `gemini-3.5-flash-lite` (`temperature=0.0`, `response_mime_type="application/json"`).
-* **Key Functionality**:
-  * Uses integer string keys (`"0", "1", ...`) in batched JSON prompts (`batch_size=30`) to prevent key mismatch caused by Unicode stress mark dropping.
-  * Normalizes word separators (`・` for spaces, `＝` for hyphens) via `_clean_kana` and validates output length against Cyrillic character counts via `_is_valid_transliteration` to reject mid-word JSON truncations, automatically retrying any missing or truncated items individually.
+  * **Method B (`GPTTransliteration`)**: OpenAI `gpt-4o-mini` (`temperature=0.0`, `response_format={"type": "json_object"}`, `timeout=60s`).
+  * **Method C (`GeminiTransliteration`)**: Google `gemini-3.5-flash-lite` (`temperature=0.0`, `response_mime_type="application/json"`, `min_request_interval=6.5s`, `timeout=60s`).
+* **Key Functionality (`BaseLLMTransliterator`)**:
+  * Uses 1-based numeric string keys (`"1", "2", ...`) in batched JSON prompts (`batch_size=60`), while automatically correcting accidental 0-based shifts (`"0".."N-1"`) and salvaging valid key-value pairs from truncated JSON outputs.
+  * Normalizes word separators (`・` for spaces, `＝` for hyphens) via `_clean_kana`, rejects truncated outputs via `_is_valid_transliteration`, recovers missing items via compact sub-batch retries (up to 2 passes) before single-item fallback, and raises `QuotaExhaustedError` cleanly on daily quota/auth exhaustion.
 
 ### 10. `wikipedia_pageviews_inflection_point_detector.py` (`WikipediaViewsDetector`)
 * **Algorithm**: Kneedle knee-point detection (Satopaa et al., 2011) over log-transformed descending 2-year average monthly Wikipedia pageviews (`avg_monthly_pv_2y`).

@@ -83,13 +83,19 @@ class BaseLLMTransliterator:
         return s.strip('・＝')
 
     @staticmethod
+    def _has_cyrillic(text: str) -> bool:
+        return bool(re.search(r'[А-Яа-яІіЇїЄєҐґ]', str(text or '')))
+
+    @staticmethod
     def _strip_accents(s: str) -> str:
         return ''.join(
             c for c in unicodedata.normalize('NFD', str(s)) if unicodedata.category(c) != 'Mn'
         ).strip()
 
     @classmethod
-    def _is_valid_transliteration(cls, ukr_word: str, kana_word: str) -> bool:
+    def _is_valid_transliteration(cls, ukr_word: str, kana_word: str, raw_text: str = '') -> bool:
+        if raw_text and cls._has_cyrillic(raw_text):
+            return False
         if not kana_word:
             return False
         cyr_len = len(re.findall(r'[А-Яа-яІіЇїЄєҐґ]', str(ukr_word)))
@@ -154,13 +160,15 @@ class BaseLLMTransliterator:
                 vals = list(obj.values())
                 if len(obj) >= 2 and all(not str(k).isdigit() for k in obj.keys()) and all(isinstance(v, (str, int)) for v in vals):
                     str_vals = [str(v) for v in vals]
-                    kana_vals = [cls._clean_kana(v) for v in str_vals if cls._clean_kana(v)]
-                    non_kana_vals = [v for v in str_vals if not cls._clean_kana(v)]
+                    kana_vals = [cls._clean_kana(v) for v in str_vals if not cls._has_cyrillic(v) and cls._clean_kana(v)]
+                    non_kana_vals = [v for v in str_vals if cls._has_cyrillic(v) or not cls._clean_kana(v)]
                     if len(kana_vals) == 1 and len(non_kana_vals) >= 1:
                         for nk in non_kana_vals:
                             flat_candidates[nk.strip()] = kana_vals[0]
                 for k, v in obj.items():
                     if isinstance(v, str):
+                        if cls._has_cyrillic(v):
+                            continue
                         cleaned = cls._clean_kana(v)
                         if cleaned:
                             flat_candidates[str(k).strip()] = cleaned
@@ -169,6 +177,8 @@ class BaseLLMTransliterator:
             elif isinstance(obj, list):
                 if len(obj) == len(toponyms_list) and all(isinstance(x, str) for x in obj):
                     for idx, x in enumerate(obj):
+                        if cls._has_cyrillic(x):
+                            continue
                         cleaned = cls._clean_kana(x)
                         if cleaned:
                             flat_candidates[str(idx + 1)] = cleaned
@@ -282,22 +292,30 @@ class BaseLLMTransliterator:
                 raw_text = self._call_batch_api(prompt_text, force_json_mime=use_json_mime)
                 parsed_json, _ = self._parse_json_or_salvage(raw_text)
                 extracted = self._extract_batch_mapping(parsed_json, items)
-                if len(extracted) > len(best_results):
-                    best_results = extracted
+                if len(extracted) >= len(best_results):
+                    merged = dict(best_results)
+                    merged.update(extracted)
+                    best_results = merged
                 else:
                     best_results.update(extracted)
-                if len(best_results) > 0:
+
+                is_severely_incomplete = (
+                    use_json_mime
+                    and len(items) >= 4
+                    and len(best_results) < (len(items) // 2)
+                )
+                if len(best_results) > 0 and not is_severely_incomplete:
                     return best_results
 
                 unparseable_count += 1
                 preview = repr((raw_text or '')[:180])
                 dbg = f" [{self._last_debug_info}]" if self._last_debug_info else ''
                 print(
-                    f"[{self.provider_label}] Empty/unparseable batch (0/{len(items)} valid, "
+                    f"[{self.provider_label}] Empty/incomplete batch ({len(extracted)}/{len(items)} valid, "
                     f"json_mime={use_json_mime}, temp=0.0){dbg}. raw={preview}",
                     flush=True,
                 )
-                # Try at most 2 unparseable 200-OK attempts (strict JSON + plain JSON) before splitting smaller
+                # Try at most 2 unparseable/severely-incomplete 200-OK attempts (strict JSON + plain JSON) before splitting smaller
                 if unparseable_count >= 2:
                     break
             except Exception as e:
@@ -321,8 +339,8 @@ class BaseLLMTransliterator:
             try:
                 self._pace_request()
                 output = self._call_single_api(prompt_text)
-                kana = self._clean_kana(output)
-                if self._is_valid_transliteration(toponym, kana):
+                kana = '' if self._has_cyrillic(output) else self._clean_kana(output)
+                if self._is_valid_transliteration(toponym, kana, raw_text=output):
                     return kana
                 invalid_ok_count += 1
                 dbg = f" [{self._last_debug_info}]" if self._last_debug_info else ''

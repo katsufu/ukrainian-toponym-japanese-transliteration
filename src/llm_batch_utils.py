@@ -1,3 +1,4 @@
+from collections import deque
 import json
 import re
 import time
@@ -12,8 +13,8 @@ class BaseLLMTransliterator:
     """
     Shared robust batch/single Ukrainian-to-Japanese Katakana transliteration engine.
     Implements 1-based JSON batch indexing ("1".."N"), truncated JSON salvage,
-    Stage B missing-item sub-batch recovery, Stage C single-item fallback, and
-    rate-limit / daily-quota classification.
+    Stage B compact sub-batch recovery (chunked to <=10), Stage C single-item fallback
+    with prompt nudge, and sliding-window RPM pacing + accurate 429 classification.
     """
 
     SINGLE_PROMPT = (
@@ -32,26 +33,47 @@ class BaseLLMTransliterator:
         'Input JSON:\n{toponyms_json}'
     )
 
-    def __init__(self, provider_label: str, min_request_interval: float = 0.0):
+    def __init__(self, provider_label: str, min_request_interval: float = 0.0, max_rpm: int = 0):
         self.provider_label = provider_label
         self.min_request_interval = float(min_request_interval)
+        self.max_rpm = int(max_rpm)
         self._last_request_ts = 0.0
+        self._request_window = deque()
+        self._last_debug_info = ''
 
     def _pace_request(self):
-        """Enforce minimum interval between consecutive API calls to avoid RPM bursts."""
-        if self.min_request_interval <= 0:
-            return
+        """Enforce both minimum inter-request spacing and a rolling 60-second RPM ceiling."""
         now = time.monotonic()
-        elapsed = now - self._last_request_ts
-        if self._last_request_ts > 0 and elapsed < self.min_request_interval:
-            time.sleep(self.min_request_interval - elapsed)
-        self._last_request_ts = time.monotonic()
+        wait_needed = 0.0
+
+        if self.min_request_interval > 0 and self._last_request_ts > 0:
+            since_last = now - self._last_request_ts
+            if since_last < self.min_request_interval:
+                wait_needed = max(wait_needed, self.min_request_interval - since_last)
+
+        if self.max_rpm > 0:
+            while self._request_window and (now - self._request_window[0]) >= 62.0:
+                self._request_window.popleft()
+            if len(self._request_window) >= self.max_rpm:
+                window_wait = (self._request_window[0] + 62.0) - now
+                if window_wait > wait_needed:
+                    wait_needed = window_wait
+
+        if wait_needed > 0:
+            time.sleep(wait_needed)
+            now = time.monotonic()
+
+        self._last_request_ts = now
+        if self.max_rpm > 0:
+            while self._request_window and (now - self._request_window[0]) >= 62.0:
+                self._request_window.popleft()
+            self._request_window.append(now)
 
     @staticmethod
     def _clean_kana(text: str) -> str:
         if not text:
             return ''
-        s = str(text).strip()
+        s = unicodedata.normalize('NFKC', str(text)).strip()
         # Normalize ASCII/fullwidth hyphens or equals between Katakana into ＝
         s = re.sub(r'(?<=[ァ-ヶー])[=＝\-－―]+(?=[ァ-ヶ])', '＝', s)
         # Normalize spaces between Katakana words into interpunct ・
@@ -92,7 +114,6 @@ class BaseLLMTransliterator:
             text = re.sub(r"\s*```$", "", text).strip()
 
         candidates = [text]
-        # Strip trailing commas before closing brace/bracket or isolate outermost braces
         candidates.append(re.sub(r',\s*([}\]])', r'\1', text))
         first_brace = text.find('{')
         last_brace = text.rfind('}')
@@ -124,14 +145,14 @@ class BaseLLMTransliterator:
         """
         Robustly extract {toponym: cleaned_kana} from LLM JSON output.
         Supports 1-based IDs ("1".."N"), defensive 0-based shift ("0".."N-1"),
-        exact/unaccented toponym keys, nested wrapper dicts, and ordered lists.
+        exact/unaccented toponym keys, nested wrapper dicts, record objects, and lists.
         """
         flat_candidates = {}
 
         def _collect(obj):
             if isinstance(obj, dict):
                 vals = list(obj.values())
-                if len(obj) in (2, 3) and all(not str(k).isdigit() for k in obj.keys()) and all(isinstance(v, (str, int)) for v in vals):
+                if len(obj) >= 2 and all(not str(k).isdigit() for k in obj.keys()) and all(isinstance(v, (str, int)) for v in vals):
                     str_vals = [str(v) for v in vals]
                     kana_vals = [cls._clean_kana(v) for v in str_vals if cls._clean_kana(v)]
                     non_kana_vals = [v for v in str_vals if not cls._clean_kana(v)]
@@ -180,6 +201,8 @@ class BaseLLMTransliterator:
     def _classify_error(err: Exception) -> tuple:
         """
         Classify API exceptions into ('fatal_auth' | 'quota_daily' | 'rate_limit' | 'transient', retry_sec).
+        Carefully distinguishes transient per-minute limits (e.g. Gemini 15 RPM containing boilerplate 'billing details')
+        from genuine daily RPD / billing / zero-quota exhaustion.
         """
         msg = str(err)
         low = msg.lower()
@@ -191,10 +214,16 @@ class BaseLLMTransliterator:
         if any(tok in low for tok in ('invalid_api_key', 'api_key_invalid', 'incorrect api key', '401 ', '403 ', 'permissiondenied', 'authentication')):
             return 'fatal_auth', 0.0
 
-        if any(tok in low for tok in ('insufficient_quota', 'billing', 'perday', 'requestsperday', 'generate_requests_per_day', 'limit: 0')):
+        is_daily_or_zero_quota = any(
+            tok in low for tok in (
+                'insufficient_quota', 'perday', 'per_day', 'requestsperday',
+                'generate_requests_per_day', 'limit: 0', 'billing not enabled', 'billing account'
+            )
+        )
+        if is_daily_or_zero_quota:
             return 'quota_daily', 0.0
 
-        if '429' in low or 'resource_exhausted' in low or 'rate limit' in low or 'too many requests' in low:
+        if '429' in low or 'resource_exhausted' in low or 'rate limit' in low or 'too many requests' in low or 'perminute' in low:
             return 'rate_limit', retry_sec
 
         return 'transient', retry_sec
@@ -205,7 +234,7 @@ class BaseLLMTransliterator:
         if err_kind in ('fatal_auth', 'quota_daily'):
             raise QuotaExhaustedError(f"{self.provider_label} API stopped ({err_kind}): {err}") from err
         if err_kind == 'rate_limit':
-            wait_sec = (retry_hint + 2.0) if retry_hint is not None else min(65.0, 20.0 + attempt * 10.0)
+            wait_sec = (retry_hint + 3.0) if retry_hint is not None else min(65.0, 25.0 + attempt * 10.0)
             print(
                 f"[{self.provider_label}] Rate Limit (429) on {context_label}. "
                 f"Waiting {wait_sec:.1f}s before retry (attempt {attempt + 1}/{max_retries})...",
@@ -224,11 +253,17 @@ class BaseLLMTransliterator:
     def _call_single_api(self, prompt_text: str) -> str:
         raise NotImplementedError
 
-    def _call_batch_api(self, prompt_text: str) -> str:
+    def _call_batch_api(self, prompt_text: str, force_json_mime: bool = True) -> str:
         raise NotImplementedError
 
-    def _run_batch_request(self, items: list, max_retries: int = 5) -> dict:
-        """Execute a single batch API request for `items` with retry & salvaged parsing."""
+    def _run_batch_request(self, items: list, max_retries: int = 4) -> dict:
+        """
+        Execute a batch API request at temperature=0.0:
+        - Attempt 1 uses strict JSON MIME mode (temperature=0.0).
+        - If 200 OK returns 0 valid items, logs diagnostic sample and retries once
+          without strict JSON MIME mode (still temperature=0.0) instead of repeating identical calls.
+        - API exceptions / 429 rate limits still honor full `max_retries` backoff.
+        """
         if not items:
             return {}
         indexed_input = {str(idx + 1): t for idx, t in enumerate(items)}
@@ -237,10 +272,14 @@ class BaseLLMTransliterator:
 
         best_results = {}
         last_rate_limit_err = None
+        unparseable_count = 0
+
         for attempt in range(max_retries):
+            use_json_mime = (unparseable_count == 0)
+            self._last_debug_info = ''
             try:
                 self._pace_request()
-                raw_text = self._call_batch_api(prompt_text)
+                raw_text = self._call_batch_api(prompt_text, force_json_mime=use_json_mime)
                 parsed_json, _ = self._parse_json_or_salvage(raw_text)
                 extracted = self._extract_batch_mapping(parsed_json, items)
                 if len(extracted) > len(best_results):
@@ -249,11 +288,18 @@ class BaseLLMTransliterator:
                     best_results.update(extracted)
                 if len(best_results) > 0:
                     return best_results
+
+                unparseable_count += 1
+                preview = repr((raw_text or '')[:180])
+                dbg = f" [{self._last_debug_info}]" if self._last_debug_info else ''
                 print(
-                    f"[{self.provider_label}] Empty/unparseable batch (0/{len(items)} valid). "
-                    f"Retrying batch (attempt {attempt + 1}/{max_retries})...",
+                    f"[{self.provider_label}] Empty/unparseable batch (0/{len(items)} valid, "
+                    f"json_mime={use_json_mime}, temp=0.0){dbg}. raw={preview}",
                     flush=True,
                 )
+                # Try at most 2 unparseable 200-OK attempts (strict JSON + plain JSON) before splitting smaller
+                if unparseable_count >= 2:
+                    break
             except Exception as e:
                 rl_err = self._handle_retry_exception(e, attempt, max_retries, f"batch ({len(items)} items)")
                 if rl_err is not None:
@@ -266,16 +312,28 @@ class BaseLLMTransliterator:
         return best_results
 
     def transliterate(self, toponym, max_retries: int = 4) -> str:
-        """Retrieve Japanese Katakana transliteration for a single toponym."""
+        """Retrieve Japanese Katakana transliteration for a single toponym at temperature=0.0."""
         prompt_text = self.SINGLE_PROMPT.format(toponym=toponym)
         last_rate_limit_err = None
+        invalid_ok_count = 0
         for attempt in range(max_retries):
+            self._last_debug_info = ''
             try:
                 self._pace_request()
                 output = self._call_single_api(prompt_text)
                 kana = self._clean_kana(output)
                 if self._is_valid_transliteration(toponym, kana):
                     return kana
+                invalid_ok_count += 1
+                dbg = f" [{self._last_debug_info}]" if self._last_debug_info else ''
+                print(
+                    f"[{self.provider_label}] Invalid single output for '{toponym}' "
+                    f"(attempt {attempt + 1}/{max_retries}, temp=0.0){dbg}: raw={repr((output or '')[:120])}",
+                    flush=True,
+                )
+                # At temperature=0.0 with identical prompt, cap 200-OK invalid repeats at 2 to conserve RPD
+                if invalid_ok_count >= 2:
+                    break
             except Exception as e:
                 rl_err = self._handle_retry_exception(e, attempt, max_retries, f"'{toponym}'")
                 if rl_err is not None:
@@ -288,10 +346,11 @@ class BaseLLMTransliterator:
 
     def transliterate_batch(self, toponyms_list: list, max_retries: int = 5) -> dict:
         """
-        Multi-stage zero-drop batch retrieval:
-        - Stage A: Primary 1-based JSON batch (with truncated JSON salvage)
-        - Stage B: Compact sub-batch recovery for any missing items (up to 2 passes)
-        - Stage C: Targeted single-item fallback only for stubborn leftovers
+        Multi-stage zero-drop batch retrieval without redundant duplicate retries:
+        - Stage A: Primary 1-based JSON batch (with truncated JSON salvage & plain-JSON fallback)
+        - Stage A2: Half-split (N/2 + N/2) if primary batch returned 0 items
+        - Stage B: Compact sub-batch recovery split into chunks of <=10 (skips repeating failed 30-item chunks)
+        - Stage C: Targeted single-item fallback with explicit Katakana nudge
         """
         if not toponyms_list:
             return {}
@@ -303,33 +362,41 @@ class BaseLLMTransliterator:
         # Stage A: Primary batch request
         results = self._run_batch_request(unique_items, max_retries=max_retries)
 
-        # If a large batch returned 0 items due to formatting (not quota), split once into half-batches
+        # Stage A2: If full batch returned 0 valid items, split once into half-batches
+        already_failed_size = len(unique_items) if not results else None
         if not results and len(unique_items) >= 10:
             mid = len(unique_items) // 2
             print(
-                f"[{self.provider_label}] Primary batch returned 0 valid items; retrying as two sub-batches "
+                f"[{self.provider_label}] Primary batch returned 0 valid items; splitting into two sub-batches "
                 f"({mid} + {len(unique_items) - mid})...",
                 flush=True,
             )
-            results.update(self._run_batch_request(unique_items[:mid], max_retries=max(2, max_retries - 1)))
-            results.update(self._run_batch_request(unique_items[mid:], max_retries=max(2, max_retries - 1)))
+            half1 = self._run_batch_request(unique_items[:mid], max_retries=max(3, max_retries - 1))
+            half2 = self._run_batch_request(unique_items[mid:], max_retries=max(3, max_retries - 1))
+            results.update(half1)
+            results.update(half2)
+            if not half1 or not half2:
+                already_failed_size = max(mid, len(unique_items) - mid)
 
-        # Stage B: Sub-batch recovery for missing items (batches all missing items together, max 2 passes)
-        for recovery_pass in range(2):
-            missing = [t for t in unique_items if not results.get(t)]
-            if len(missing) <= 1:
-                break
-            print(
-                f"[{self.provider_label}] Sub-batch recovery pass {recovery_pass + 1}: "
-                f"requesting {len(missing)}/{len(unique_items)} missing items in 1 batch...",
-                flush=True,
-            )
-            recovered = self._run_batch_request(missing, max_retries=max(2, max_retries - 1))
-            if not recovered:
-                break
-            results.update(recovered)
+        # Stage B: Sub-batch recovery for missing items using compact chunks (max size 10, avoids repeating failed chunks)
+        missing = [t for t in unique_items if not results.get(t)]
+        if len(missing) > 1:
+            sub_size = 10 if (already_failed_size and len(missing) >= already_failed_size) else min(15, len(missing))
+            if sub_size >= 2:
+                print(
+                    f"[{self.provider_label}] Sub-batch recovery: requesting {len(missing)}/{len(unique_items)} "
+                    f"missing items in chunk(s) of <= {sub_size}...",
+                    flush=True,
+                )
+                for j in range(0, len(missing), sub_size):
+                    sub_chunk = missing[j:j + sub_size]
+                    if len(sub_chunk) == 1:
+                        results[sub_chunk[0]] = self.transliterate(sub_chunk[0])
+                    else:
+                        recovered = self._run_batch_request(sub_chunk, max_retries=max(3, max_retries - 1))
+                        results.update(recovered)
 
-        # Stage C: Final single-item fallback for stubborn items remaining after sub-batch recovery
+        # Stage C: Final single-item fallback for stubborn items remaining after Stage B
         still_missing = [t for t in unique_items if not results.get(t)]
         if still_missing:
             if not results and len(still_missing) >= 10:
@@ -355,6 +422,7 @@ class BaseLLMTransliterator:
                         print(f"[{self.provider_label}] WARNING: Empty transliteration remained for '{t}'.", flush=True)
 
         return {t: results.get(t, '') for t in toponyms_list}
+
 
 # Note: BaseLLMTransliterator is an abstract base class (_call_single_api / _call_batch_api are
 # implemented by provider subclasses). Standalone __main__ smoke tests are provided in:

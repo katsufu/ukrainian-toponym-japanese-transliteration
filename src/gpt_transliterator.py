@@ -13,7 +13,7 @@ from llm_batch_utils import BaseLLMTransliterator  # noqa: E402
 class GPTTransliteration(BaseLLMTransliterator):
 
     def __init__(self, model_name='gpt-4o-mini', request_timeout: float = 60.0):
-        super().__init__(provider_label='GPT', min_request_interval=0.0)
+        super().__init__(provider_label='GPT', min_request_interval=0.0, max_rpm=0)
         api_key = os.environ.get('OPENAI_API_KEY')
         self.client = openai.OpenAI(api_key=api_key, timeout=request_timeout, max_retries=1)
         self.model_name = model_name
@@ -31,14 +31,16 @@ class GPTTransliteration(BaseLLMTransliterator):
         )
         return (response.choices[0].message.content or '').strip()
 
-    def _call_batch_api(self, prompt_text: str) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            temperature=.0,
-            timeout=self.request_timeout,
-            response_format={"type": "json_object"},
-            messages=[{'role': 'user', 'content': prompt_text}]
-        )
+    def _call_batch_api(self, prompt_text: str, force_json_mime: bool = True) -> str:
+        kwargs = {
+            'model': self.model_name,
+            'temperature': .0,
+            'timeout': self.request_timeout,
+            'messages': [{'role': 'user', 'content': prompt_text}],
+        }
+        if force_json_mime:
+            kwargs['response_format'] = {"type": "json_object"}
+        response = self.client.chat.completions.create(**kwargs)
         return (response.choices[0].message.content or '').strip()
 
 

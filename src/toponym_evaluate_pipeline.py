@@ -493,6 +493,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size for LLM API calls (default: 60 production, 5 mock)')
     parser.add_argument('--llm-cache-path', type=str, default=None, help='Path to persistent JSON checkpoint cache for LLM runs')
     parser.add_argument('--clear-llm-cache', action='store_true', help='Remove existing LLM checkpoint cache before running')
+    parser.add_argument('--clear-gemini-cache', action='store_true', help='Clear only cached Gemini runs while keeping cached GPT runs')
+    parser.add_argument('--clear-gpt-cache', action='store_true', help='Clear only cached GPT runs while keeping cached Gemini runs')
     args, _ = parser.parse_known_args()
 
     is_mock = MOCK_MODE or args.mock
@@ -520,6 +522,19 @@ if __name__ == '__main__':
     if args.clear_llm_cache and llm_cache_path and os.path.exists(llm_cache_path):
         os.remove(llm_cache_path)
         print(f"Cleared existing LLM checkpoint cache: {llm_cache_path}", flush=True)
+    elif llm_cache_path and os.path.exists(llm_cache_path) and (args.clear_gemini_cache or args.clear_gpt_cache):
+        with open(llm_cache_path, 'r', encoding='utf-8') as f:
+            existing_cache = json.load(f)
+        if args.clear_gemini_cache and 'gemini' in existing_cache:
+            del existing_cache['gemini']
+            print("Cleared only Gemini entries from LLM checkpoint cache (GPT preserved).", flush=True)
+        if args.clear_gpt_cache and 'gpt' in existing_cache:
+            del existing_cache['gpt']
+            print("Cleared only GPT entries from LLM checkpoint cache (Gemini preserved).", flush=True)
+        tmp_cache = llm_cache_path + '.tmp'
+        with open(tmp_cache, 'w', encoding='utf-8') as f:
+            json.dump(existing_cache, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_cache, llm_cache_path)
 
     print(f"Loading data from {csv_file}...", flush=True)
     df = pd.read_csv(csv_file)

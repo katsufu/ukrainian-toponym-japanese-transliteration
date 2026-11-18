@@ -368,7 +368,7 @@ class ToponymEvaluatePipeline:
                 'c_audios': c_audios,
             })
 
-        # Batched WavLM Layer 7 CMVN Feature Extraction over unique audio files
+        # Batched Meta MMS (facebook/mms-1b) Layer 7 CMVN Feature Extraction over unique audio files
         unique_audio_paths = sorted(all_audio_paths_set)
         print(
             f'Calculating Acoustic Distances across {len(unique_audio_paths)} unique audio files '

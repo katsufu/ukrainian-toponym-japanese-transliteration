@@ -13,12 +13,12 @@ src/
 ├── japanese_g2p.py                       # Deterministic mora-level Katakana-to-IPA converter
 ├── fed_evaluator.py                      # Articulatory Feature Edit Distance evaluator (PanPhon)
 ├── perplexity_evaluator.py               # Phonotactic complexity evaluator (UniDic Mora 3-gram LM)
-├── acoustic_distance_evaluator.py        # WavLM-Base-Plus Layer 7 (CMVN) + FastDTW evaluator
+├── acoustic_distance_evaluator.py        # Meta MMS (facebook/mms-1b) Layer 7 (CMVN) + FastDTW evaluator
 ├── audio_generator.py                    # Dual-language TTS audio synthesizer
 ├── rulebased_transliteration.py          # Hybrid rule-based + Wikipedia pageview threshold selector
 ├── llm_batch_utils.py                    # Shared 1-based batch JSON recovery, pacing & quota error handling
 ├── gpt_transliterator.py                 # OpenAI GPT-4o-mini zero-shot transliteration
-├── gemini_transliteratior.py             # Google Gemini 3.5 Flash zero-shot transliteration
+├── gemini_transliteratior.py             # Google Gemini 3.5 Flash-Lite zero-shot transliteration
 └── wikipedia_pageviews_inflection_point_detector.py # Kneedle algorithm & table exporter
 ```
 
@@ -30,9 +30,9 @@ src/
 * **Role**: Master pipeline orchestrator coordinating threshold detection, deduplication, multi-run LLM generation (`--num-llm-runs 5`) with disk checkpointing, memoized G2P conversion, TTS synthesis, and 3-dimensional evaluation.
 * **Workflow**:
   1. Applies the Wikipedia pageview knee-point threshold ($\ge 533.8$ views/month) across all $5,554$ records via `RuleBasedTransliteration`.
-  2. Deduplicates into $1,821$ unique (`toponym_with_accent`, `transliteration_a_kana`) evaluation pairs (`eval_1` to `eval_1821`).
-  3. Generates LLM transliterations (Method B: GPT-4o-mini, Method C: Gemini) across $K=5$ independent runs in 1-based indexed JSON batches (`batch_size=60`), persisting each completed batch atomically to `results/llm_run_cache.json` so interrupted/rate-limited runs resume seamlessly.
-  4. Runs G2P, TTS audio synthesis, Feature Edit Distance (FED), Mora Perplexity (PPL), and batched WavLM Layer 7 + FastDTW acoustic evaluation with identical-transliteration caching, computing the 5-run mean, standard deviation (`_std`), majority-vote transliteration, and self-consistency (`_agreement_rate`, `_exact_match`).
+  2. Deduplicates into $1,853$ unique (`toponym_with_accent`, `transliteration_a_kana`) evaluation pairs (`eval_1` to `eval_1853`), spanning $1,821$ unique Ukrainian accented toponym strings.
+  3. Generates LLM transliterations (Method B: GPT-4o-mini, Method C: Gemini 3.5 Flash-Lite) across $K=5$ independent runs in 1-based indexed JSON batches (`batch_size=60`), persisting each completed batch atomically to `results/llm_run_cache.json` (with `--clear-llm-cache`, `--clear-gemini-cache`, and `--clear-gpt-cache` flags for selective re-runs).
+  4. Runs G2P, TTS audio synthesis, Feature Edit Distance (FED), Mora Perplexity (PPL), and batched Meta MMS (`facebook/mms-1b`) Layer 7 + FastDTW acoustic evaluation with identical-transliteration caching, computing the 5-run mean, standard deviation (`_std`), majority-vote transliteration, and self-consistency (`_agreement_rate`, `_exact_match`).
   5. Merges evaluated metrics back into the full $5,554$-row dataset and exports `results/ukrainian_toponyms_evaluation_results.csv`.
 
 ### 2. `ukrainian_g2p.py` (`UkrainianG2P`)
@@ -63,11 +63,11 @@ src/
 * **Smoothing & OOV Resolution**: Uses true empirical N-gram frequencies at the highest order ($k=3$), unique continuation counts $N_{1+}(\bullet\, h\, w)$ at lower orders ($k \in \{1, 2\}$), and exact base interpolation with $P_0(w) = 1 / |V_{\text{all}}|$, guaranteeing finite perplexity scores while accurately reflecting Japanese phonotactic naturalness.
 
 ### 6. `acoustic_distance_evaluator.py` (`AcousticDistanceEvaluator`)
-* **Underlying Model**: Microsoft WavLM-Base-Plus (`microsoft/wavlm-base-plus`; Chen et al., 2022).
+* **Underlying Model**: Meta MMS (`facebook/mms-1b`, `Wav2Vec2Model`; Pratap et al., 2024).
 * **Signal & Feature Processing**:
-  1. **Endpoint Silence Trimming (`_preprocess_waveform`)**: Trims leading and trailing silence ($-35\text{ dB}$ threshold with a $25\text{ ms}$ collar) and applies peak normalization prior to SSL encoding.
-  2. **Attention-Masked Layer 7 Extraction**: Passes explicit `attention_mask` during batched GPU inference (`batch_size=16`) and slices exact unpadded frame lengths (`_compute_feat_len`) from **Layer 7** ($T \times 768$).
-  3. **Utterance-Level CMVN (`_cmvn`)**: Applies Cepstral Mean and Variance Normalization across the temporal dimension of each utterance to eliminate cross-gender/cross-engine speaker timbre bias between Ukrainian female TTS and Japanese male TTS.
+  1. **Endpoint Silence Trimming (`_preprocess_waveform`)**: Resamples to $16\text{ kHz}$ mono, normalizes peak amplitude to $1.0$, and trims leading/trailing silence ($< 1\%$ peak amplitude with a $20\text{ ms}$ / $320$-sample margin, preserving at least $50\text{ ms}$ for the CNN feature extractor).
+  2. **Attention-Masked Layer 7 Extraction**: Passes explicit `attention_mask` during batched GPU inference (`batch_size=16`) and slices exact unpadded frame lengths (`_get_feat_extract_output_lengths`) from **Layer 7** ($T \times 1280$).
+  3. **Utterance-Level CMVN (`_cmvn`)**: Applies Cepstral / Feature Mean and Variance Normalization across the temporal dimension of each utterance to eliminate cross-synthesizer speaker timbre offsets between Ukrainian VITS (`Voices.Dmytro`) and Japanese Kokoro-82M (`jm_kumo`).
 * **Alignment**: Computes length-normalized **FastDTW** cosine distance between the normalized Layer 7 frame trajectories:
   $$\text{Dist}(A_{ukr}, A_{ja}) = \frac{1}{|P|} \sum_{(i, j) \in P} \left(1 - \frac{\vec{u}_i \cdot \vec{v}_j}{\|\vec{u}_i\|_2 \|\vec{v}_j\|_2}\right)$$
 
@@ -83,13 +83,14 @@ src/
 ### 9. LLM Transliterators (`llm_batch_utils.py`, `gpt_transliterator.py` & `gemini_transliteratior.py`)
 * **Models**:
   * **Method B (`GPTTransliteration`)**: OpenAI `gpt-4o-mini` (`temperature=0.0`, `response_format={"type": "json_object"}`, `timeout=60s`).
-  * **Method C (`GeminiTransliteration`)**: Google `gemini-3.5-flash-lite` (`temperature=0.0`, `response_mime_type="application/json"`, `min_request_interval=6.5s`, `timeout=60s`).
+  * **Method C (`GeminiTransliteration`)**: Google `gemini-3.5-flash-lite` (`temperature=0.0`, `response_mime_type="application/json"`, `min_request_interval=5.5s`, `max_rpm=10`, `timeout=60s`).
 * **Key Functionality (`BaseLLMTransliterator`)**:
-  * Uses 1-based numeric string keys (`"1", "2", ...`) in batched JSON prompts (`batch_size=60`), while automatically correcting accidental 0-based shifts (`"0".."N-1"`) and salvaging valid key-value pairs from truncated JSON outputs.
-  * Normalizes word separators (`・` for spaces, `＝` for hyphens) via `_clean_kana`, rejects truncated outputs via `_is_valid_transliteration`, recovers missing items via compact sub-batch retries (up to 2 passes) before single-item fallback, and raises `QuotaExhaustedError` cleanly on daily quota/auth exhaustion.
+  * Strictly maintains `temperature=0.0` and identical zero-shot prompts across all calls and retries, with 1-based numeric string keys (`"1", "2", ...`) in batched JSON prompts (`batch_size=60`), automatic 0-based shift correction (`"0".."N-1"`), and truncated JSON pair salvage.
+  * Isolates right-hand Katakana targets when LLMs emit arrow-prefixed strings (`原語 -> カタカナ`, `_extract_target_segment`), rejects any Cyrillic residue (`_has_cyrillic`) or mid-word truncation (`_is_valid_transliteration`), and normalizes separators (`・` for spaces, `＝` for hyphens) via `_clean_kana`.
+  * Implements multi-stage zero-drop recovery: Stage A (`json_mime=True` with single `json_mime=False` fallback) $\rightarrow$ Stage A2 (interleaved even/odd half-split) $\rightarrow$ Stage B (stride-interleaved compact sub-batches $\le 10$ separating accent-variant collisions) $\rightarrow$ Stage C (single-item fallback), plus sliding-window RPM pacing (`_pace_request`) and `QuotaExhaustedError` handling on daily RPD/auth exhaustion.
 
 ### 10. `wikipedia_pageviews_inflection_point_detector.py` (`WikipediaViewsDetector`)
-* **Algorithm**: Kneedle knee-point detection (Satopaa et al., 2011) over log-transformed descending 2-year average monthly Wikipedia pageviews (`avg_monthly_pv_2y`).
+* **Algorithm**: Kneedle knee-point detection (`KneeLocator(..., curve='convex', direction='decreasing', online=True)`; Satopaa et al., 2011) over descending 2-year average monthly Wikipedia pageviews (`avg_monthly_pv_2y`).
 * **Output**:
-  * Detects the Knee Point threshold ($533.8$ views/month at Rank $213$).
-  * Exports `results/established_toponyms_table.csv` (190 unique established toponyms across 213 records) and `results/wikipedia_pageview_knee_analysis.png`.
+  * Detects the Knee Point threshold ($533.8$ views/month at Rank $500$).
+  * Exports `results/established_toponyms_table.csv` (190 unique established toponyms with Japanese Wikipedia articles above threshold) and `results/wikipedia_pageview_knee_analysis.png`.

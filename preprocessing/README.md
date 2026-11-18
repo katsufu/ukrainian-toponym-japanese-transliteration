@@ -1,6 +1,6 @@
 # Data Preprocessing Pipeline
 
-This directory contains the Python scripts and procedures used to retrieve and enrich the Ukrainian toponym datasets, retrieveing the data from Ukrainian Wikipedia and Wikidata.
+This directory contains the Python scripts and procedures used to retrieve and enrich the Ukrainian toponym datasets, retrieving the data from Ukrainian Wikipedia and Wikidata.
 
 To maintain a separation between the datasets and the pipeline, all datasets are maintained in `../data/`, while this directory has only the algorithmic engines and procedural documentation.
 

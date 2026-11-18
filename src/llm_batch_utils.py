@@ -70,10 +70,18 @@ class BaseLLMTransliterator:
             self._request_window.append(now)
 
     @staticmethod
-    def _clean_kana(text: str) -> str:
+    def _extract_target_segment(text: str) -> str:
+        """If the LLM outputs 'Ukrainian -> Katakana' or 'Ukrainian => Katakana', isolate the right-hand target side."""
+        s = str(text or '').strip()
+        if re.search(r'(?:->|=>|→|⇒)', s):
+            s = re.split(r'(?:->|=>|→|⇒)', s)[-1].strip().strip('"\'')
+        return s
+
+    @classmethod
+    def _clean_kana(cls, text: str) -> str:
         if not text:
             return ''
-        s = unicodedata.normalize('NFKC', str(text)).strip()
+        s = unicodedata.normalize('NFKC', cls._extract_target_segment(text)).strip()
         # Normalize ASCII/fullwidth hyphens, dashes, or equals (with optional surrounding spaces) between Katakana into ＝
         s = re.sub(r'(?<=[ァ-ヶー])[\s　]*[=＝\-－―–—]+[\s　]*(?=[ァ-ヶ])', '＝', s)
         # Normalize spaces or repeated interpuncts between Katakana words into a single interpunct ・
@@ -82,9 +90,10 @@ class BaseLLMTransliterator:
         s = re.sub(r'[^ァ-ヶー・＝]', '', s)
         return s.strip('・＝')
 
-    @staticmethod
-    def _has_cyrillic(text: str) -> bool:
-        return bool(re.search(r'[А-Яа-яІіЇїЄєҐґ]', str(text or '')))
+    @classmethod
+    def _has_cyrillic(cls, text: str) -> bool:
+        target = cls._extract_target_segment(text)
+        return bool(re.search(r'[А-Яа-яІіЇїЄєҐґ]', target))
 
     @staticmethod
     def _strip_accents(s: str) -> str:
@@ -134,10 +143,13 @@ class BaseLLMTransliterator:
             except Exception:
                 pass
 
-        # Salvage complete "key": "value" pairs from truncated JSON outputs
+        # Salvage complete "key": "value" pairs (including malformed '"1": "ukr" => "kana"' lines) from truncated JSON outputs
         salvaged = {}
+        arrow_line_pattern = re.compile(
+            r'"(\d+)"\s*:\s*"[^"\\]*(?:\\.[^"\\]*)*"\s*(?::\s*"[^"\\]*(?:\\.[^"\\]*)*"\s*)?(?:=>|->|→|⇒)\s*"([^"\\]*(?:\\.[^"\\]*)*)"'
+        )
         pair_pattern = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"')
-        for k_raw, v_raw in pair_pattern.findall(text):
+        for k_raw, v_raw in pair_pattern.findall(text) + arrow_line_pattern.findall(text):
             try:
                 k_dec = json.loads(f'"{k_raw}"')
                 v_dec = json.loads(f'"{v_raw}"')
@@ -382,34 +394,46 @@ class BaseLLMTransliterator:
         # Stage A: Primary batch request
         results = self._run_batch_request(unique_items, max_retries=max_retries)
 
-        # Stage A2: If full batch returned 0 valid items, split once into half-batches (preferring plain JSON first)
+        # Stage A2: If full batch returned 0 valid items, split once into interleaved even/odd half-batches
+        # (separating adjacent accent-variant pairs like 'Краснопі́лля'/'Краснопілля' that trigger Cyrillic echoing)
         already_failed_size = len(unique_items) if not results else None
         if not results and len(unique_items) >= 10:
-            mid = len(unique_items) // 2
+            even_half = unique_items[0::2]
+            odd_half = unique_items[1::2]
             print(
                 f"[{self.provider_label}] Primary batch returned 0 valid items; splitting into two sub-batches "
-                f"({mid} + {len(unique_items) - mid})...",
+                f"({len(even_half)} + {len(odd_half)})...",
                 flush=True,
             )
-            half1 = self._run_batch_request(unique_items[:mid], max_retries=max(3, max_retries - 1), prefer_plain_json=True)
-            half2 = self._run_batch_request(unique_items[mid:], max_retries=max(3, max_retries - 1), prefer_plain_json=True)
+            half1 = self._run_batch_request(even_half, max_retries=max(3, max_retries - 1), prefer_plain_json=True)
+            half2 = self._run_batch_request(odd_half, max_retries=max(3, max_retries - 1), prefer_plain_json=True)
             results.update(half1)
             results.update(half2)
             if not half1 or not half2:
-                already_failed_size = max(mid, len(unique_items) - mid)
+                already_failed_size = max(len(even_half), len(odd_half))
 
-        # Stage B: Sub-batch recovery for missing items using compact chunks (max size 10, avoids repeating failed chunks)
+        # Stage B: Sub-batch recovery for missing items using stride-interleaved compact chunks (max size 10)
         missing = [t for t in unique_items if not results.get(t)]
         if len(missing) > 1:
             sub_size = 10 if (already_failed_size and len(missing) >= already_failed_size) else min(15, len(missing))
             if sub_size >= 2:
+                n_chunks = max(1, (len(missing) + sub_size - 1) // sub_size)
+                # Ensure accent-variant pairs (e.g., 'Берегове'/'Берегове́') are always split into distinct chunks
+                accent_counts = {}
+                for t in missing:
+                    k_norm = self._strip_accents(t)
+                    accent_counts[k_norm] = accent_counts.get(k_norm, 0) + 1
+                max_accent_mult = max(accent_counts.values())
+                if max_accent_mult > n_chunks:
+                    n_chunks = max_accent_mult
+                eff_chunk_size = (len(missing) + n_chunks - 1) // n_chunks
                 print(
                     f"[{self.provider_label}] Sub-batch recovery: requesting {len(missing)}/{len(unique_items)} "
-                    f"missing items in chunk(s) of <= {sub_size}...",
+                    f"missing items in {n_chunks} chunk(s) of <= {eff_chunk_size}...",
                     flush=True,
                 )
-                for j in range(0, len(missing), sub_size):
-                    sub_chunk = missing[j:j + sub_size]
+                for c_idx in range(n_chunks):
+                    sub_chunk = missing[c_idx::n_chunks]
                     if len(sub_chunk) == 1:
                         results[sub_chunk[0]] = self.transliterate(sub_chunk[0])
                     else:

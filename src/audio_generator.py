@@ -189,7 +189,7 @@ class AudioGenerator:
         )[0]
         audio_f32 = np.squeeze(audio_24k).astype(np.float32)
 
-        # Resample 24 kHz -> 16 kHz for WavLM-Base-Plus compatibility
+        # Resample 24 kHz -> 16 kHz for Meta MMS (facebook/mms-1b) compatibility
         g = math.gcd(self.KOKORO_SR, self.TARGET_SR)
         audio_16k = resample_poly(audio_f32, self.TARGET_SR // g, self.KOKORO_SR // g)
 

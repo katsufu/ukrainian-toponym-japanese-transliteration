@@ -455,7 +455,7 @@ class ToponymEvaluatePipeline:
 
         # Print multi-run self-consistency summary
         print(f'\n--- Multi-Run LLM Reproducibility Summary (K = {self.num_llm_runs} runs, N = {len(eval_df)}) ---')
-        for m_code, m_label in [('b', 'Method B (GPT-4o-mini)'), ('c', 'Method C (Gemini-3.1-FL)')]:
+        for m_code, m_label in [('b', 'Method B (GPT-4o-mini)'), ('c', 'Method C (Gemini-3.5-FL)')]:
             exact_pct = eval_df[f'transliteration_{m_code}_exact_match'].mean() * 100.0
             agree_pct = eval_df[f'transliteration_{m_code}_agreement_rate'].mean() * 100.0
             mean_fed_sd = eval_df[f'transliteration_{m_code}_fed_std'].mean()

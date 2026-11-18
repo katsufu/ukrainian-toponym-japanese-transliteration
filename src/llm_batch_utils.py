@@ -14,7 +14,7 @@ class BaseLLMTransliterator:
     Shared robust batch/single Ukrainian-to-Japanese Katakana transliteration engine.
     Implements 1-based JSON batch indexing ("1".."N"), truncated JSON salvage,
     Stage B compact sub-batch recovery (chunked to <=10), Stage C single-item fallback
-    with prompt nudge, and sliding-window RPM pacing + accurate 429 classification.
+    at strict temperature=0.0, and sliding-window RPM pacing + accurate 429 classification.
     """
 
     SINGLE_PROMPT = (
@@ -74,10 +74,10 @@ class BaseLLMTransliterator:
         if not text:
             return ''
         s = unicodedata.normalize('NFKC', str(text)).strip()
-        # Normalize ASCII/fullwidth hyphens or equals between Katakana into ＝
-        s = re.sub(r'(?<=[ァ-ヶー])[=＝\-－―]+(?=[ァ-ヶ])', '＝', s)
-        # Normalize spaces between Katakana words into interpunct ・
-        s = re.sub(r'(?<=[ァ-ヶー])[\s　]+(?=[ァ-ヶ])', '・', s)
+        # Normalize ASCII/fullwidth hyphens, dashes, or equals (with optional surrounding spaces) between Katakana into ＝
+        s = re.sub(r'(?<=[ァ-ヶー])[\s　]*[=＝\-－―–—]+[\s　]*(?=[ァ-ヶ])', '＝', s)
+        # Normalize spaces or repeated interpuncts between Katakana words into a single interpunct ・
+        s = re.sub(r'(?<=[ァ-ヶー])[\s　・]+(?=[ァ-ヶ])', '・', s)
         # Retain only Katakana, prolonged sound mark ー, interpunct ・, and double hyphen ＝
         s = re.sub(r'[^ァ-ヶー・＝]', '', s)
         return s.strip('・＝')
@@ -266,12 +266,12 @@ class BaseLLMTransliterator:
     def _call_batch_api(self, prompt_text: str, force_json_mime: bool = True) -> str:
         raise NotImplementedError
 
-    def _run_batch_request(self, items: list, max_retries: int = 4) -> dict:
+    def _run_batch_request(self, items: list, max_retries: int = 4, prefer_plain_json: bool = False) -> dict:
         """
         Execute a batch API request at temperature=0.0:
-        - Attempt 1 uses strict JSON MIME mode (temperature=0.0).
-        - If 200 OK returns 0 valid items, logs diagnostic sample and retries once
-          without strict JSON MIME mode (still temperature=0.0) instead of repeating identical calls.
+        - Attempt 1 uses strict JSON MIME mode by default (or plain JSON when `prefer_plain_json=True` in sub-batch recovery).
+        - If 200 OK returns 0 or <50% valid items, logs diagnostic sample and retries once
+          with the alternate JSON MIME setting (still temperature=0.0) instead of repeating identical calls.
         - API exceptions / 429 rate limits still honor full `max_retries` backoff.
         """
         if not items:
@@ -285,11 +285,12 @@ class BaseLLMTransliterator:
         unparseable_count = 0
 
         for attempt in range(max_retries):
-            use_json_mime = (unparseable_count == 0)
+            use_json_mime = (unparseable_count == 1) if prefer_plain_json else (unparseable_count == 0)
             self._last_debug_info = ''
             try:
                 self._pace_request()
                 raw_text = self._call_batch_api(prompt_text, force_json_mime=use_json_mime)
+                last_rate_limit_err = None
                 parsed_json, _ = self._parse_json_or_salvage(raw_text)
                 extracted = self._extract_batch_mapping(parsed_json, items)
                 if len(extracted) >= len(best_results):
@@ -300,7 +301,7 @@ class BaseLLMTransliterator:
                     best_results.update(extracted)
 
                 is_severely_incomplete = (
-                    use_json_mime
+                    unparseable_count == 0
                     and len(items) >= 4
                     and len(best_results) < (len(items) // 2)
                 )
@@ -339,6 +340,7 @@ class BaseLLMTransliterator:
             try:
                 self._pace_request()
                 output = self._call_single_api(prompt_text)
+                last_rate_limit_err = None
                 kana = '' if self._has_cyrillic(output) else self._clean_kana(output)
                 if self._is_valid_transliteration(toponym, kana, raw_text=output):
                     return kana
@@ -368,7 +370,7 @@ class BaseLLMTransliterator:
         - Stage A: Primary 1-based JSON batch (with truncated JSON salvage & plain-JSON fallback)
         - Stage A2: Half-split (N/2 + N/2) if primary batch returned 0 items
         - Stage B: Compact sub-batch recovery split into chunks of <=10 (skips repeating failed 30-item chunks)
-        - Stage C: Targeted single-item fallback with explicit Katakana nudge
+        - Stage C: Targeted single-item fallback at temperature=0.0
         """
         if not toponyms_list:
             return {}
@@ -380,7 +382,7 @@ class BaseLLMTransliterator:
         # Stage A: Primary batch request
         results = self._run_batch_request(unique_items, max_retries=max_retries)
 
-        # Stage A2: If full batch returned 0 valid items, split once into half-batches
+        # Stage A2: If full batch returned 0 valid items, split once into half-batches (preferring plain JSON first)
         already_failed_size = len(unique_items) if not results else None
         if not results and len(unique_items) >= 10:
             mid = len(unique_items) // 2
@@ -389,8 +391,8 @@ class BaseLLMTransliterator:
                 f"({mid} + {len(unique_items) - mid})...",
                 flush=True,
             )
-            half1 = self._run_batch_request(unique_items[:mid], max_retries=max(3, max_retries - 1))
-            half2 = self._run_batch_request(unique_items[mid:], max_retries=max(3, max_retries - 1))
+            half1 = self._run_batch_request(unique_items[:mid], max_retries=max(3, max_retries - 1), prefer_plain_json=True)
+            half2 = self._run_batch_request(unique_items[mid:], max_retries=max(3, max_retries - 1), prefer_plain_json=True)
             results.update(half1)
             results.update(half2)
             if not half1 or not half2:
@@ -411,7 +413,9 @@ class BaseLLMTransliterator:
                     if len(sub_chunk) == 1:
                         results[sub_chunk[0]] = self.transliterate(sub_chunk[0])
                     else:
-                        recovered = self._run_batch_request(sub_chunk, max_retries=max(3, max_retries - 1))
+                        recovered = self._run_batch_request(
+                            sub_chunk, max_retries=max(3, max_retries - 1), prefer_plain_json=True
+                        )
                         results.update(recovered)
 
         # Stage C: Final single-item fallback for stubborn items remaining after Stage B
